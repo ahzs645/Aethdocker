@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aethalometer Data Processing Interface</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            color: #333;
+            background-color: #f8f9fa;
+            padding-bottom: 50px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        h1, h2, h3, h4, h5, h6 {
+            color: #212529;
+            font-weight: 600;
+        }
+        .header {
+            text-align: center;
+            padding: 30px 0;
+            background-color: #f1f3f5;
+            margin-bottom: 30px;
+            border-radius: 0 0 10px 10px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .card {
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        .card-header {
+            background-color: #e9ecef;
+            border-bottom: 1px solid #dee2e6;
+            font-weight: 600;
+            color: #495057;
+        }
+        .form-label {
+            font-weight: 500;
+            color: #495057;
+        }
+        .btn-primary {
+            background-color: #0d6efd;
+            border-color: #0d6efd;
+        }
+        .btn-primary:hover {
+            background-color: #0b5ed7;
+            border-color: #0a58ca;
+        }
+        .progress {
+            height: 25px;
+            margin-bottom: 10px;
+        }
+        .progress-bar {
+            background-color: #0d6efd;
+            color: white;
+            font-weight: 600;
+            font-size: 14px;
+            line-height: 25px;
+        }
+        .status-message {
+            font-weight: 500;
+            color: #495057;
+            margin-bottom: 20px;
+        }
+        .visualization-container {
+            height: 600px;
+            width: 100%;
+            border: none;
+        }
+        .nav-tabs .nav-link {
+            color: #495057;
+            font-weight: 500;
+        }
+        .nav-tabs .nav-link.active {
+            color: #0d6efd;
+            font-weight: 600;
+        }
+        .alert {
+            border-radius: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="container">
+            <h1>Aethalometer Data Processing Interface</h1>
+            <p class="lead text-muted">Process and analyze aethalometer data with ONA algorithm</p>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="row">
+            <div class="col-md-12">
+                <div class="card">
+                    <div class="card-header">
+                        Upload Data Files
+                    </div>
+                    <div class="card-body">
+                        <form id="uploadForm" enctype="multipart/form-data">
+                            <div class="mb-3">
+                                <label for="aethalometerFile" class="form-label">Aethalometer Data (CSV)</label>
+                                <input type="file" class="form-control" id="aethalometerFile" name="aethalometer_file" accept=".csv" required>
+                            </div>
+                            <div class="mb-3">
+                                <label for="weatherFile" class="form-label">Weather Data (CSV, Optional)</label>
+                                <input type="file" class="form-control" id="weatherFile" name="weather_file" accept=".csv">
+                            </div>
+                            <div class="card mt-4">
+                                <div class="card-header">
+                                    ONA Algorithm Parameters
+                                </div>
+                                <div class="card-body">
+                                    <div class="row">
+                                        <div class="col-md-6">
+                                            <div class="mb-3">
+                                                <label for="atnMin" class="form-label">ATN Min Value</label>
+                                                <input type="number" class="form-control" id="atnMin" name="atn_min" value="0.01" step="0.01" min="0.001" max="1">
+                                                <div class="form-text">Minimum ATN change for averaging window</div>
+                                            </div>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <div class="mb-3">
+                                                <label for="wavelength" class="form-label">Wavelength</label>
+                                                <select class="form-select" id="wavelength" name="wavelength">
+                                                    <option value="UV">UV</option>
+                                                    <option value="Blue" selected>Blue</option>
+                                                    <option value="Green">Green</option>
+                                                    <option value="Red">Red</option>
+                                                    <option value="IR">IR</option>
+                                                </select>
+                                                <div class="form-text">Wavelength to analyze</div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <button type="submit" class="btn btn-primary mt-3" id="processButton">Process Data</button>
+                        </form>
+                    </div>
+                </div>
+
+                <div id="processingStatus" class="card mt-4 d-none">
+                    <div class="card-header">
+                        Processing Progress
+                    </div>
+                    <div class="card-body">
+                        <div class="progress">
+                            <div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">0%</div>
+                        </div>
+                        <div class="status-message" id="statusMessage">Starting processing...</div>
+                    </div>
+                </div>
+
+                <div id="results" class="card mt-4 d-none">
+                    <div class="card-header">
+                        Results
+                    </div>
+                    <div class="card-body">
+                        <ul class="nav nav-tabs" id="resultTabs" role="tablist">
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-link active" id="bc-time-series-tab" data-bs-toggle="tab" data-bs-target="#bc-time-series" type="button" role="tab" aria-controls="bc-time-series" aria-selected="true">BC Time Series</button>
+                            </li>
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-link" id="atn-time-series-tab" data-bs-toggle="tab" data-bs-target="#atn-time-series" type="button" role="tab" aria-controls="atn-time-series" aria-selected="false">ATN Time Series</button>
+                            </li>
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-link" id="bc-comparison-tab" data-bs-toggle="tab" data-bs-target="#bc-comparison" type="button" role="tab" aria-controls="bc-comparison" aria-selected="false">BC Comparison</button>
+                            </li>
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-link" id="weather-correlation-tab" data-bs-toggle="tab" data-bs-target="#weather-correlation" type="button" role="tab" aria-controls="weather-correlation" aria-selected="false">Weather Correlation</button>
+                            </li>
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-link" id="data-tab" data-bs-toggle="tab" data-bs-target="#data" type="button" role="tab" aria-controls="data" aria-selected="false">Data</button>
+                            </li>
+                        </ul>
+                        <div class="tab-content" id="resultTabsContent">
+                            <div class="tab-pane fade show active" id="bc-time-series" role="tabpanel" aria-labelledby="bc-time-series-tab">
+                                <iframe id="bcTimeSeriesFrame" class="visualization-container mt-3"></iframe>
+                            </div>
+                            <div class="tab-pane fade" id="atn-time-series" role="tabpanel" aria-labelledby="atn-time-series-tab">
+                                <iframe id="atnTimeSeriesFrame" class="visualization-container mt-3"></iframe>
+                            </div>
+                            <div class="tab-pane fade" id="bc-comparison" role="tabpanel" aria-labelledby="bc-comparison-tab">
+                                <iframe id="bcComparisonFrame" class="visualization-container mt-3"></iframe>
+                            </div>
+                            <div class="tab-pane fade" id="weather-correlation" role="tabpanel" aria-labelledby="weather-correlation-tab">
+                                <iframe id="weatherCorrelationFrame" class="visualization-container mt-3"></iframe>
+                            </div>
+                            <div class="tab-pane fade" id="data" role="tabpanel" aria-labelledby="data-tab">
+                                <div class="mt-3">
+                                    <a id="downloadLink" class="btn btn-primary mb-3">Download Processed Data</a>
+                                    <div class="table-responsive">
+                                        <table class="table table-striped table-bordered">
+                                            <thead id="dataTableHead">
+                                                <tr>
+                                                    <th>Timestamp</th>
+                                                    <th>Raw BC</th>
+                                                    <th>Processed BC</th>
+                                                    <th>ATN</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="dataTableBody">
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="errorAlert" class="alert alert-danger mt-4 d-none" role="alert">
+                    <h4 class="alert-heading">Error processing data</h4>
+                    <p id="errorMessage"></p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const uploadForm = document.getElementById('uploadForm');
+            const processButton = document.getElementById('processButton');
+            const processingStatus = document.getElementById('processingStatus');
+            const progressBar = document.querySelector('.progress-bar');
+            const statusMessage = document.getElementById('statusMessage');
+            const results = document.getElementById('results');
+            const errorAlert = document.getElementById('errorAlert');
+            const errorMessage = document.getElementById('errorMessage');
+            
+            let currentJobId = null;
+            let statusCheckInterval = null;
+            
+            uploadForm.addEventListener('submit', function(e) {
+                e.preventDefault();
+                
+                // Reset UI
+                results.classList.add('d-none');
+                errorAlert.classList.add('d-none');
+                
+                // Show processing status
+                processingStatus.classList.remove('d-none');
+                progressBar.style.width = '0%';
+                progressBar.textContent = '0%';
+                statusMessage.textContent = 'Starting processing...';
+                
+                // Disable process button
+                processButton.disabled = true;
+                
+                // Create form data
+                const formData = new FormData(uploadForm);
+                
+                // Send request
+                fetch('/api/process', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        showError(data.error);
+                        return;
+                    }
+                    
+                    currentJobId = data.job_id;
+                    
+                    // Start polling for status
+                    statusCheckInterval = setInterval(checkStatus, 1000);
+                })
+                .catch(error => {
+                    showError('Error submitting form: ' + error.message);
+                });
+            });
+            
+            function checkStatus() {
+                if (!currentJobId) return;
+                
+                fetch(`/api/status/${currentJobId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        clearInterval(statusCheckInterval);
+                        showError(data.error);
+                        return;
+                    }
+                    
+                    // Update progress
+                    progressBar.style.width = `${data.progress}%`;
+                    progressBar.textContent = `${data.progress}%`;
+                    statusMessage.textContent = data.message;
+                    
+                    // Check if processing is complete
+                    if (data.status === 'Completed') {
+                        clearInterval(statusCheckInterval);
+                        processButton.disabled = false;
+                        showResults(data.results);
+                    }
+                    
+                    // Check if there was an error
+                    if (data.status === 'Error') {
+                        clearInterval(statusCheckInterval);
+                        processButton.disabled = false;
+                        showError(data.message);
+                    }
+                })
+                .catch(error => {
+                    clearInterval(statusCheckInterval);
+                    showError('Error checking status: ' + error.message);
+                });
+            }
+            
+            function showResults(results) {
+                // Check if results is defined
+                if (!results) {
+                    showError('Error: No results data received');
+                    return;
+                }
+                
+                // Hide processing status
+                processingStatus.classList.add('d-none');
+                
+                // Show results
+                document.getElementById('results').classList.remove('d-none');
+                
+                // Check if visualizations object exists
+                if (!results.visualizations) {
+                    showError('Error: Visualization data is missing');
+                    return;
+                }
+                
+                // Set visualization iframes with null checks
+                if (results.visualizations.bc_time_series) {
+                    document.getElementById('bcTimeSeriesFrame').src = results.visualizations.bc_time_series;
+                }
+                
+                if (results.visualizations.atn_time_series) {
+                    document.getElementById('atnTimeSeriesFrame').src = results.visualizations.atn_time_series;
+                }
+                
+                if (results.visualizations.bc_comparison) {
+                    document.getElementById('bcComparisonFrame').src = results.visualizations.bc_comparison;
+                }
+                
+                // Set weather correlation iframe if available
+                const weatherCorrelationTab = document.getElementById('weather-correlation-tab');
+                const weatherCorrelationFrame = document.getElementById('weatherCorrelationFrame');
+                
+                // Make sure the tab element exists before trying to modify it
+                if (weatherCorrelationTab) {
+                    if (results.visualizations.weather_correlation) {
+                        weatherCorrelationFrame.src = results.visualizations.weather_correlation;
+                        weatherCorrelationTab.classList.remove('d-none');
+                    } else {
+                        // Hide the tab if no weather correlation data
+                        weatherCorrelationTab.classList.add('d-none');
+                    }
+                }
+                
+                // Set download link with null check
+                const downloadLink = document.getElementById('downloadLink');
+                if (downloadLink && results.download_path) {
+                    downloadLink.href = `/api/download/${results.download_path}`;
+                }
+                
+                // Populate data table with null checks
+                const dataTableBody = document.getElementById('dataTableBody');
+                if (dataTableBody && results.processed_data && Array.isArray(results.processed_data)) {
+                    dataTableBody.innerHTML = '';
+                    
+                    results.processed_data.forEach(row => {
+                        if (row) {
+                            const tr = document.createElement('tr');
+                            tr.innerHTML = `
+                                <td>${row.timestamp ? new Date(row.timestamp).toLocaleString() : 'N/A'}</td>
+                                <td>${row.rawBC !== undefined ? row.rawBC : 'N/A'}</td>
+                                <td>${row.processedBC !== undefined ? row.processedBC : 'N/A'}</td>
+                                <td>${row.atn !== undefined ? row.atn : 'N/A'}</td>
+                            `;
+                            dataTableBody.appendChild(tr);
+                        }
+                    });
+                }
+            }
+            
+            function showError(message) {
+                processingStatus.classList.add('d-none');
+                errorAlert.classList.remove('d-none');
+                errorMessage.textContent = message;
+                processButton.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>
