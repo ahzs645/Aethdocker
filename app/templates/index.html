@@ -349,16 +349,27 @@
                 
                 // Set weather correlation iframe if available
                 const weatherCorrelationTab = document.getElementById('weather-correlation-tab');
+                const weatherCorrelationPane = document.getElementById('weather-correlation');
                 const weatherCorrelationFrame = document.getElementById('weatherCorrelationFrame');
                 
-                // Make sure the tab element exists before trying to modify it
-                if (weatherCorrelationTab) {
-                    if (results.visualizations.weather_correlation) {
+                // Make sure the elements exist before trying to modify them
+                if (weatherCorrelationTab && weatherCorrelationPane && weatherCorrelationFrame) {
+                    if (results.visualizations && results.visualizations.weather_correlation) {
                         weatherCorrelationFrame.src = results.visualizations.weather_correlation;
-                        weatherCorrelationTab.classList.remove('d-none');
+                        weatherCorrelationTab.style.display = '';
+                        weatherCorrelationPane.classList.remove('d-none');
+                        // Switch to first tab if we're currently on the weather tab
+                        if (weatherCorrelationPane.classList.contains('show')) {
+                            document.getElementById('bc-time-series-tab').click();
+                        }
                     } else {
-                        // Hide the tab if no weather correlation data
-                        weatherCorrelationTab.classList.add('d-none');
+                        // Hide both the tab and pane if no weather correlation data
+                        weatherCorrelationTab.style.display = 'none';
+                        weatherCorrelationPane.classList.add('d-none');
+                        // Switch to first tab if we're currently on the weather tab
+                        if (weatherCorrelationPane.classList.contains('show')) {
+                            document.getElementById('bc-time-series-tab').click();
+                        }
                     }
                 }
                 

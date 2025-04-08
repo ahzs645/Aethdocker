@@ -13,11 +13,16 @@ from app.utils.status_tracker import processing_status, processing_progress, pro
 
 def downsample_data(df: pd.DataFrame, max_points: int = 10000) -> pd.DataFrame:
     """Downsample data intelligently to preserve important features"""
+    print(f"[DEBUG] Downsampling data. Input shape: {df.shape}")
+    print(f"[DEBUG] Input columns: {df.columns.tolist()}")
+    print(f"[DEBUG] processedBC stats before downsampling: {df['processedBC'].describe() if 'processedBC' in df.columns else 'Not found'}")
+    
     if len(df) <= max_points:
         return df
     
     # Calculate optimal window size for downsampling
     window_size = len(df) // max_points
+    print(f"[DEBUG] Calculated window size: {window_size}")
     
     # Use rolling window to capture local extremes
     df_downsampled = pd.DataFrame()
@@ -28,6 +33,8 @@ def downsample_data(df: pd.DataFrame, max_points: int = 10000) -> pd.DataFrame:
     
     # Process numeric columns
     numeric_cols = df.select_dtypes(include=[np.number]).columns
+    print(f"[DEBUG] Processing numeric columns: {numeric_cols.tolist()}")
+    
     for col in numeric_cols:
         # Calculate mean, min, and max for each window
         means = df[col].rolling(window=window_size, center=True).mean()[::window_size]
@@ -39,7 +46,12 @@ def downsample_data(df: pd.DataFrame, max_points: int = 10000) -> pd.DataFrame:
         # Add significant extremes
         significant_diff = (maxs - mins) > means.std()
         df_downsampled.loc[significant_diff, col] = maxs[significant_diff]
+        
+        if col == 'processedBC':
+            print(f"[DEBUG] processedBC stats after downsampling: {df_downsampled['processedBC'].describe()}")
     
+    print(f"[DEBUG] Output shape: {df_downsampled.shape}")
+    print(f"[DEBUG] Output columns: {df_downsampled.columns.tolist()}")
     return df_downsampled
 
 def create_time_series_plot(df: pd.DataFrame, x: str, y: List[str], title: str, 
@@ -114,11 +126,18 @@ def identify_weather_columns(df: pd.DataFrame) -> List[str]:
     print(f"[DEBUG] Identified weather columns: {weather_cols}")
     return weather_cols
 
-def create_visualizations(original_df: pd.DataFrame, processed_df: pd.DataFrame, 
-                        combined_df: Optional[pd.DataFrame], wavelength: str, 
+def create_visualizations(original_df: pd.DataFrame, processed_df: pd.DataFrame,
+                        combined_df: Optional[pd.DataFrame], wavelength: str,
                         timestamp: str, job_id: Optional[str] = None) -> Dict[str, str]:
     """Create visualizations with improved memory efficiency and error handling"""
     try:
+        print(f"[DEBUG] Starting create_visualizations")
+        print(f"[DEBUG] Original DataFrame shape: {original_df.shape}")
+        print(f"[DEBUG] Processed DataFrame shape: {processed_df.shape}")
+        print(f"[DEBUG] Combined DataFrame shape: {combined_df.shape if combined_df is not None else 'None'}")
+        print(f"[DEBUG] Processed DataFrame columns: {processed_df.columns.tolist()}")
+        print(f"[DEBUG] processedBC stats in processed_df: {processed_df['processedBC'].describe() if 'processedBC' in processed_df.columns else 'Not found'}")
+        
         if job_id:
             processing_status[job_id] = "Creating visualizations"
             processing_messages[job_id] = "Preparing data for visualization..."
@@ -144,6 +163,12 @@ def create_visualizations(original_df: pd.DataFrame, processed_df: pd.DataFrame,
             # BC Time Series
             if job_id:
                 processing_messages[job_id] = "Generating BC time series plot..."
+            
+            print(f"[DEBUG] Creating BC time series plot")
+            print(f"[DEBUG] viz_df shape before time series: {viz_df.shape}")
+            print(f"[DEBUG] viz_df columns: {viz_df.columns.tolist()}")
+            print(f"[DEBUG] processedBC null values: {viz_df['processedBC'].isnull().sum() if 'processedBC' in viz_df.columns else 'Column not found'}")
+            print(f"[DEBUG] processedBC stats in viz_df: {viz_df['processedBC'].describe() if 'processedBC' in viz_df.columns else 'Not found'}")
             
             bc_fig = create_time_series_plot(
                 viz_df,
@@ -177,7 +202,15 @@ def create_visualizations(original_df: pd.DataFrame, processed_df: pd.DataFrame,
                 processing_messages[job_id] = "Generating BC comparison plot..."
                 processing_progress[job_id] = 95
             
+            print(f"[DEBUG] Creating BC comparison plot")
+            print(f"[DEBUG] viz_df shape before comparison: {viz_df.shape}")
+            print(f"[DEBUG] Required columns present: rawBC={('rawBC' in viz_df.columns)}, processedBC={('processedBC' in viz_df.columns)}")
+            
             valid_bc_data = viz_df[['rawBC', 'processedBC']].dropna()
+            print(f"[DEBUG] Valid BC data shape after dropna: {valid_bc_data.shape}")
+            print(f"[DEBUG] Rows dropped due to NaN: {len(viz_df) - len(valid_bc_data)}")
+            print(f"[DEBUG] processedBC stats in valid_bc_data: {valid_bc_data['processedBC'].describe() if len(valid_bc_data) > 0 else 'Empty DataFrame'}")
+            
             if len(valid_bc_data) > 0:
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(
@@ -235,15 +268,24 @@ def create_visualizations(original_df: pd.DataFrame, processed_df: pd.DataFrame,
                     processing_messages[job_id] = "Generating weather correlation plots..."
                     processing_progress[job_id] = 98
                 
+                # Add processedBC to combined_df if not present
+                if 'processedBC' not in combined_df.columns and 'processedBC' in processed_df.columns:
+                    print("[DEBUG] Adding processedBC to combined data")
+                    combined_df = combined_df.copy()
+                    combined_df['processedBC'] = processed_df['processedBC']
+                
                 # Downsample combined data
                 combined_viz_df = downsample_data(combined_df)
                 
                 # Identify weather columns with improved detection
                 weather_cols = identify_weather_columns(combined_viz_df)
                 print(f"[DEBUG] Identified weather columns: {weather_cols}")
+                print(f"[DEBUG] Combined viz columns: {combined_viz_df.columns.tolist()}")
+                print(f"[DEBUG] ProcessedBC present: {'processedBC' in combined_viz_df.columns}")
                 
-                if weather_cols:
+                if weather_cols and 'processedBC' in combined_viz_df.columns:
                     print("[DEBUG] Creating weather correlation subplots")
+                    print(f"[DEBUG] ProcessedBC stats: {combined_viz_df['processedBC'].describe()}")
                     try:
                         # Create correlation plots with improved layout
                         fig = make_subplots(

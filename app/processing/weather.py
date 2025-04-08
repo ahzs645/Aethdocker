@@ -423,18 +423,41 @@ def synchronize_data(aethalometer_df, weather_df, job_id=None):
         weather_reset = weather_reset.sort_values('timestamp')
         
         print("[DEBUG] Merging dataframes")
+        print(f"[DEBUG] Aethalometer columns before merge: {aethalometer_reset.columns.tolist()}")
+        print(f"[DEBUG] Weather columns before merge: {weather_reset.columns.tolist()}")
+        
+        # Identify overlapping columns (except timestamp)
+        overlapping_cols = [col for col in aethalometer_reset.columns if col in weather_reset.columns and col != 'timestamp']
+        if overlapping_cols:
+            print(f"[DEBUG] Found overlapping columns: {overlapping_cols}")
+            # Rename overlapping columns in weather_reset
+            weather_reset = weather_reset.rename(columns={col: f"weather_{col}" for col in overlapping_cols})
+            print(f"[DEBUG] Weather columns after renaming: {weather_reset.columns.tolist()}")
+        
         # Merge dataframes with improved handling
         combined = pd.merge_asof(
             aethalometer_reset,
             weather_reset,
             on='timestamp',
             direction='nearest',
-            tolerance=pd.Timedelta('1H')  # Match within 1 hour for hourly weather data
+            tolerance=pd.Timedelta('1h')  # Match within 1 hour for hourly weather data
         )
+
+        # Add processedBC column if it exists in original data
+        if 'processedBC' in aethalometer_df.columns:
+            combined['processedBC'] = aethalometer_df['processedBC']
+        
+        print(f"[DEBUG] Combined columns after merge: {combined.columns.tolist()}")
         
         # Ensure 'processedBC' column is retained
-        if 'processedBC' in aethalometer_df.columns:
+        print("[DEBUG] Checking for processedBC column")
+        print(f"[DEBUG] Columns in aethalometer_reset: {aethalometer_reset.columns.tolist()}")
+        print(f"[DEBUG] processedBC in combined before: {combined.columns.tolist()}")
+        
+        if 'processedBC' not in combined.columns and 'processedBC' in aethalometer_reset.columns:
+            print("[DEBUG] Restoring processedBC column")
             combined['processedBC'] = aethalometer_reset['processedBC']
+            print(f"[DEBUG] processedBC stats after restoration: {combined['processedBC'].describe()}")
         
         print(f"[DEBUG] Combined data shape: {combined.shape}")
         print(f"[DEBUG] Combined columns: {combined.columns.tolist()}")
