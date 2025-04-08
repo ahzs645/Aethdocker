@@ -65,7 +65,7 @@ aethalometer_data.csv
 weather_data.csv (optional)
 
 2. Run the App
-Default Port (5000)
+Default Port (8080)
 bash
 Copy
 Edit
@@ -76,7 +76,7 @@ Copy
 Edit
 PORT=8080 docker-compose up
 Then open:
-👉 http://localhost:5000
+👉 http://localhost:8080
 or
 👉 http://localhost:8080 (if using a custom port)
 
@@ -109,7 +109,7 @@ yaml
 Copy
 Edit
 ports:
-  - "${PORT:-5000}:${PORT:-5000}"
+  - "${PORT:-8080}:${PORT:-8080}"
 Use any free port by setting PORT=XXXX before docker-compose up.
 
 🧑‍🔬 Reference

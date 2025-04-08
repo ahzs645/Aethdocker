@@ -3,6 +3,7 @@ import plotly
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
+from plotly.subplots import make_subplots
 import pandas as pd
 import numpy as np
 from scipy import stats
@@ -89,23 +90,28 @@ def calculate_correlations(data: pd.DataFrame, x: str, y: str) -> Dict[str, floa
 def identify_weather_columns(df: pd.DataFrame) -> List[str]:
     """Identify weather-related columns in the dataframe"""
     weather_patterns = {
-        'temperature': ['temp', 'temperature'],
-        'humidity': ['humid', 'rh', 'relativehumidity'],
-        'wind': ['wind', 'ws', 'windspeed'],
-        'pressure': ['press', 'pressure', 'bp', 'barometric'],
-        'precipitation': ['precip', 'rain', 'rainfall']
+        'temperature': ['temperature_c', 'temperature', 'temp_c', 'temp'],
+        'humidity': ['relative_humidity_percent', 'humidity', 'rh', 'rel_humid'],
+        'windSpeed': ['wind_speed_kmh', 'windspeed', 'wind_speed', 'wind'],
+        'pressure': ['pressure_hpa', 'pressure', 'press', 'air_pressure']
     }
     
     weather_cols = []
+    print("[DEBUG] Looking for weather columns in DataFrame")
+    print(f"[DEBUG] Available columns: {df.columns.tolist()}")
+    
     for col in df.columns:
         col_lower = col.lower()
         for category, patterns in weather_patterns.items():
-            if any(pattern in col_lower for pattern in patterns):
-                # Ensure column contains numeric data
+            if any(pattern.lower() in col_lower for pattern in patterns):
                 if pd.api.types.is_numeric_dtype(df[col]):
                     weather_cols.append(col)
+                    print(f"[DEBUG] Found weather column: {col} matching category {category}")
+                else:
+                    print(f"[DEBUG] Column {col} matches pattern but is not numeric. Type: {df[col].dtype}")
                 break
     
+    print(f"[DEBUG] Identified weather columns: {weather_cols}")
     return weather_cols
 
 def create_visualizations(original_df: pd.DataFrame, processed_df: pd.DataFrame, 
@@ -174,8 +180,6 @@ def create_visualizations(original_df: pd.DataFrame, processed_df: pd.DataFrame,
             valid_bc_data = viz_df[['rawBC', 'processedBC']].dropna()
             if len(valid_bc_data) > 0:
                 fig = go.Figure()
-                
-                # Add scatter plot
                 fig.add_trace(go.Scatter(
                     x=valid_bc_data['rawBC'],
                     y=valid_bc_data['processedBC'],
@@ -223,12 +227,13 @@ def create_visualizations(original_df: pd.DataFrame, processed_df: pd.DataFrame,
             
             # Weather correlation plots
             if combined_df is not None and not combined_df.empty:
+                print("[DEBUG] Starting weather correlation visualization")
+                print(f"[DEBUG] Combined DataFrame shape: {combined_df.shape}")
+                print(f"[DEBUG] Combined DataFrame columns: {combined_df.columns.tolist()}")
+                
                 if job_id:
                     processing_messages[job_id] = "Generating weather correlation plots..."
                     processing_progress[job_id] = 98
-                
-                # Print debug information
-                print(f"[DEBUG] Combined data columns: {combined_df.columns.tolist()}")
                 
                 # Downsample combined data
                 combined_viz_df = downsample_data(combined_df)
@@ -238,74 +243,73 @@ def create_visualizations(original_df: pd.DataFrame, processed_df: pd.DataFrame,
                 print(f"[DEBUG] Identified weather columns: {weather_cols}")
                 
                 if weather_cols:
-                    # Create correlation plots
-                    fig = plotly.subplots.make_subplots(
-                        rows=len(weather_cols),
-                        cols=1,
-                        subplot_titles=[f'{wavelength} BC vs {col}' for col in weather_cols],
-                        vertical_spacing=0.1
-                    )
-                    
-                    for i, weather_col in enumerate(weather_cols, 1):
-                        # Calculate correlations
-                        corr_stats = calculate_correlations(combined_viz_df, 'processedBC', weather_col)
-                        
-                        # Add scatter plot
-                        fig.add_trace(
-                            go.Scatter(
-                                x=combined_viz_df[weather_col],
-                                y=combined_viz_df['processedBC'],
-                                mode='markers',
-                                marker=dict(
-                                    color=combined_viz_df['processedBC'],
-                                    colorscale='Viridis',
-                                    showscale=True
-                                ),
-                                name=weather_col
-                            ),
-                            row=i, col=1
+                    print("[DEBUG] Creating weather correlation subplots")
+                    try:
+                        # Create correlation plots with improved layout
+                        fig = make_subplots(
+                            rows=len(weather_cols),
+                            cols=1,
+                            subplot_titles=[f'{wavelength} BC vs {col}' for col in weather_cols],
+                            vertical_spacing=0.1
                         )
                         
-                        # Add correlation annotation if available
-                        if corr_stats:
-                            fig.add_annotation(
-                                text=f"Pearson r: {corr_stats['pearson_r']:.3f}<br>Spearman ρ: {corr_stats['spearman_r']:.3f}",
-                                xref=f"x{i}", yref=f"y{i}",
-                                x=0.05, y=0.95,
-                                showarrow=False,
-                                bgcolor='rgba(255,255,255,0.8)'
+                        for i, weather_col in enumerate(weather_cols, 1):
+                            print(f"[DEBUG] Creating subplot for {weather_col}")
+                            
+                            # Calculate correlations
+                            corr_stats = calculate_correlations(combined_viz_df, 'processedBC', weather_col)
+                            print(f"[DEBUG] Correlation stats for {weather_col}: {corr_stats}")
+                            
+                            # Add scatter plot
+                            fig.add_trace(
+                                go.Scatter(
+                                    x=combined_viz_df[weather_col],
+                                    y=combined_viz_df['processedBC'],
+                                    mode='markers',
+                                    marker=dict(
+                                        color=combined_viz_df['processedBC'],
+                                        colorscale='Viridis',
+                                        showscale=True if i == 1 else False,
+                                        colorbar=dict(title='BC (ng/m³)') if i == 1 else None
+                                    ),
+                                    name=weather_col
+                                ),
+                                row=i, col=1
                             )
-                    
-                    fig.update_layout(
-                        height=300 * len(weather_cols),
-                        width=800,
-                        template='plotly_white',
-                        showlegend=False
-                    )
-                    
-                    # Update x and y axis labels
-                    for i, weather_col in enumerate(weather_cols, 1):
-                        fig.update_xaxes(title_text=weather_col, row=i, col=1)
-                        fig.update_yaxes(title_text='BC (ng/m³)', row=i, col=1)
-                    
-                    weather_correlation_path = os.path.join(static_folder, f'weather_correlation_{timestamp}.html')
-                    fig.write_html(weather_correlation_path)
-                    result['weather_correlation'] = f'/static/weather_correlation_{timestamp}.html'
-                    
-                    # Create time-aligned plot
-                    time_fig = create_time_series_plot(
-                        combined_viz_df,
-                        'timestamp',
-                        ['processedBC'] + weather_cols,
-                        'Time-Aligned BC and Weather Parameters',
-                        ''
-                    )
-                    
-                    time_aligned_path = os.path.join(static_folder, f'time_aligned_{timestamp}.html')
-                    time_fig.write_html(time_aligned_path)
-                    result['time_aligned'] = f'/static/time_aligned_{timestamp}.html'
+                            
+                            if corr_stats:
+                                fig.add_annotation(
+                                    text=f"Pearson r: {corr_stats['pearson_r']:.3f}<br>Spearman ρ: {corr_stats['spearman_r']:.3f}",
+                                    xref=f"x{i}", yref=f"y{i}",
+                                    x=0.05, y=0.95,
+                                    showarrow=False,
+                                    bgcolor='rgba(255,255,255,0.8)'
+                                )
+                        
+                        print("[DEBUG] Updating layout for weather correlation plot")
+                        fig.update_layout(
+                            height=300 * len(weather_cols),
+                            width=800,
+                            template='plotly_white',
+                            showlegend=False
+                        )
+                        
+                        for i, weather_col in enumerate(weather_cols, 1):
+                            fig.update_xaxes(title_text=weather_col, row=i, col=1)
+                            fig.update_yaxes(title_text='BC (ng/m³)', row=i, col=1)
+                        
+                        print("[DEBUG] Saving weather correlation plot")
+                        weather_correlation_path = os.path.join(static_folder, f'weather_correlation_{timestamp}.html')
+                        fig.write_html(weather_correlation_path)
+                        result['weather_correlation'] = f'/static/weather_correlation_{timestamp}.html'
+                        print("[DEBUG] Weather correlation plot saved successfully")
+                    except Exception as e:
+                        print(f"[DEBUG] Error creating weather correlation plot: {str(e)}")
+                        print(traceback.format_exc())
                 else:
-                    print("[DEBUG] No weather columns identified in combined data")
+                    print("[DEBUG] No weather columns identified for correlation plots")
+            else:
+                print("[DEBUG] No combined data available for weather correlation")
         
         except Exception as e:
             print(f"Error in visualization creation: {e}")

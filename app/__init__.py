@@ -2,8 +2,8 @@ from flask import Flask
 import os
 
 def create_app():
-    # Get port from environment variable with default of 5000
-    port = int(os.environ.get('PORT', 5000))
+    # Get port from environment variable with default of 8080
+    port = int(os.environ.get('PORT', 8080))
     
     app = Flask(__name__)
     app.config['UPLOAD_FOLDER'] = 'data'

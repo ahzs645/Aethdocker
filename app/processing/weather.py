@@ -3,15 +3,15 @@ import os
 import numpy as np
 from datetime import datetime, timezone
 from app.utils.status_tracker import processing_status, processing_progress, processing_messages
+import traceback
 
 def standardize_column_names(df):
     """Standardize weather data column names"""
     column_patterns = {
-        'temperature': ['temp', 'temperature'],
-        'humidity': ['humid', 'rh', 'relativehumidity'],
-        'windSpeed': ['wind', 'ws', 'windspeed'],
-        'pressure': ['press', 'pressure', 'bp', 'barometric'],
-        'precipitation': ['precip', 'rain', 'rainfall']
+        'temperature': ['temperature_c', 'temperature', 'temp_c', 'temp'],
+        'humidity': ['relative_humidity_percent', 'humidity', 'rh', 'rel_humid'],
+        'windSpeed': ['wind_speed_kmh', 'windspeed', 'wind_speed', 'wind'],
+        'pressure': ['pressure_hpa', 'pressure', 'press', 'air_pressure']
     }
     
     # Keep track of how many times we've seen each standard name
@@ -21,7 +21,7 @@ def standardize_column_names(df):
     for col in df.columns:
         col_lower = col.lower()
         for standard_name, patterns in column_patterns.items():
-            if any(pattern in col_lower for pattern in patterns):
+            if any(pattern.lower() in col_lower for pattern in patterns):
                 # If we've seen this standard name before, append a number
                 if standard_name in name_counts:
                     name_counts[standard_name] += 1
@@ -29,7 +29,6 @@ def standardize_column_names(df):
                 else:
                     name_counts[standard_name] = 1
                     actual_name = standard_name
-                
                 renamed_columns[col] = actual_name
                 break
     
@@ -363,6 +362,7 @@ def synchronize_data(aethalometer_df, weather_df, job_id=None):
             print(f"[DEBUG] Error during timestamp conversion: {str(e)}")
             print(f"[DEBUG] Aethalometer timestamp type: {type(aethalometer_df['timestamp'])}")
             print(f"[DEBUG] Weather timestamp type: {type(weather_df['timestamp'])}")
+            print(f"[DEBUG] Full traceback: {traceback.format_exc()}")
             raise
         
         # Handle multiple windSpeed columns if they exist
@@ -375,11 +375,12 @@ def synchronize_data(aethalometer_df, weather_df, job_id=None):
             weather_df = weather_df.drop(columns=[col for col in wind_speed_cols if col != 'windSpeed'])
             print(f"[DEBUG] Combined wind speed columns into single column")
             print(f"[DEBUG] Updated weather columns: {weather_df.columns.tolist()}")
-            
+        
         # Convert both to UTC if they have different timezones
         if (aethalometer_df['timestamp'].dt.tz and
             weather_df['timestamp'].dt.tz and
             aethalometer_df['timestamp'].dt.tz != weather_df['timestamp'].dt.tz):
+            print("[DEBUG] Converting timestamps to UTC")
             aethalometer_df['timestamp'] = aethalometer_df['timestamp'].dt.tz_convert('UTC')
             weather_df['timestamp'] = weather_df['timestamp'].dt.tz_convert('UTC')
         
@@ -387,18 +388,31 @@ def synchronize_data(aethalometer_df, weather_df, job_id=None):
         aethalometer_df = aethalometer_df.set_index('timestamp')
         weather_df = weather_df.set_index('timestamp')
         
+        print("[DEBUG] Calculating resampling frequency")
         # Calculate resampling frequency
         time_diffs = pd.Series(aethalometer_df.index[1:] - aethalometer_df.index[:-1])
         if len(time_diffs) > 0:
             min_time_diff = time_diffs.min()
             resample_freq = f"{max(1, int(min_time_diff.total_seconds()))}S"
+            print(f"[DEBUG] Using resampling frequency: {resample_freq}")
         else:
             resample_freq = '1min'  # Default if can't determine
+            print("[DEBUG] Using default resampling frequency: 1min")
         
-        print(f"[DEBUG] Resampling frequency: {resample_freq}")
+        print("[DEBUG] Resampling and interpolating weather data")
+        # For hourly weather data, use appropriate interpolation
+        weather_resampled = weather_df.copy()
         
-        # Resample and interpolate weather data
-        weather_resampled = weather_df.resample(resample_freq).interpolate(method='time')
+        # Fill missing values using appropriate methods for each type
+        for col in weather_resampled.columns:
+            if col.startswith(('temperature', 'humidity', 'pressure')):
+                # Use cubic interpolation for continuous variables
+                weather_resampled[col] = weather_resampled[col].interpolate(method='cubic')
+            elif col.startswith('wind'):
+                # Use linear interpolation for wind measurements
+                weather_resampled[col] = weather_resampled[col].interpolate(method='linear')
+        
+        print(f"[DEBUG] Weather data shape after resampling: {weather_resampled.shape}")
         
         # Reset index for merge
         aethalometer_reset = aethalometer_df.reset_index()
@@ -408,17 +422,24 @@ def synchronize_data(aethalometer_df, weather_df, job_id=None):
         aethalometer_reset = aethalometer_reset.sort_values('timestamp')
         weather_reset = weather_reset.sort_values('timestamp')
         
+        print("[DEBUG] Merging dataframes")
         # Merge dataframes with improved handling
         combined = pd.merge_asof(
             aethalometer_reset,
             weather_reset,
             on='timestamp',
             direction='nearest',
-            tolerance=pd.Timedelta('5min')  # Only match within 5 minutes
+            tolerance=pd.Timedelta('1H')  # Match within 1 hour for hourly weather data
         )
+        
+        # Ensure 'processedBC' column is retained
+        if 'processedBC' in aethalometer_df.columns:
+            combined['processedBC'] = aethalometer_reset['processedBC']
         
         print(f"[DEBUG] Combined data shape: {combined.shape}")
         print(f"[DEBUG] Combined columns: {combined.columns.tolist()}")
+        print("[DEBUG] Sample of combined data:")
+        print(combined.head())
         
         if job_id:
             processing_progress[job_id] = 100
@@ -428,7 +449,8 @@ def synchronize_data(aethalometer_df, weather_df, job_id=None):
         
     except Exception as e:
         error_msg = f"Error synchronizing data: {str(e)}"
+        print(error_msg)
+        print(f"[DEBUG] Full traceback: {traceback.format_exc()}")
         if job_id:
             processing_messages[job_id] = error_msg
-        print(error_msg)
         raise RuntimeError(error_msg)
