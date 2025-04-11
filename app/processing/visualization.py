@@ -279,10 +279,13 @@ def create_visualizations(original_df: pd.DataFrame, processed_df: pd.DataFrame,
                 
                 # Identify weather columns with improved detection
                 weather_cols = identify_weather_columns(combined_viz_df)
-                print(f"[DEBUG] Identified weather columns: {weather_cols}")
-                print(f"[DEBUG] Combined viz columns: {combined_viz_df.columns.tolist()}")
-                print(f"[DEBUG] ProcessedBC present: {'processedBC' in combined_viz_df.columns}")
-                
+
+                print(
+                    f"[DEBUG] Identified weather columns: {weather_cols}, "
+                    f"Combined viz columns: {combined_viz_df.columns.tolist()}, "
+                    f"ProcessedBC present: {'processedBC' in combined_viz_df.columns}"
+                )
+
                 if weather_cols and 'processedBC' in combined_viz_df.columns:
                     print("[DEBUG] Creating weather correlation subplots")
                     print(f"[DEBUG] ProcessedBC stats: {combined_viz_df['processedBC'].describe()}")
@@ -292,7 +295,7 @@ def create_visualizations(original_df: pd.DataFrame, processed_df: pd.DataFrame,
                             rows=len(weather_cols),
                             cols=1,
                             subplot_titles=[f'{wavelength} BC vs {col}' for col in weather_cols],
-                            vertical_spacing=0.1
+                            vertical_spacing=0.2
                         )
                         
                         for i, weather_col in enumerate(weather_cols, 1):
@@ -309,9 +312,10 @@ def create_visualizations(original_df: pd.DataFrame, processed_df: pd.DataFrame,
                                     y=combined_viz_df['processedBC'],
                                     mode='markers',
                                     marker=dict(
-                                        color=combined_viz_df['processedBC'],
-                                        colorscale='Viridis',
-                                        showscale=True if i == 1 else False,
+                                        size=8,
+                                        color=combined_viz_df['processedBC'], # Color by BC values
+                                        colorscale='Plasma', # Change color scale to 'Plasma'
+                                        showscale=True if i == len(weather_cols) else False, # Show scale only for the last plot
                                         colorbar=dict(title='BC (ng/m³)') if i == 1 else None
                                     ),
                                     name=weather_col
@@ -321,11 +325,13 @@ def create_visualizations(original_df: pd.DataFrame, processed_df: pd.DataFrame,
                             
                             if corr_stats:
                                 fig.add_annotation(
-                                    text=f"Pearson r: {corr_stats['pearson_r']:.3f}<br>Spearman ρ: {corr_stats['spearman_r']:.3f}",
+                                    text=(f"Pearson r: {corr_stats['pearson_r']:.3f}<br>"
+                                          f"Spearman ρ: {corr_stats['spearman_r']:.3f}"),
                                     xref=f"x{i}", yref=f"y{i}",
-                                    x=0.05, y=0.95,
+                                    x=0.95, y=0.95,
                                     showarrow=False,
-                                    bgcolor='rgba(255,255,255,0.8)'
+                                    bgcolor='rgba(255,255,255,0.8)',
+                                    xanchor='right'
                                 )
                         
                         print("[DEBUG] Updating layout for weather correlation plot")
@@ -336,10 +342,16 @@ def create_visualizations(original_df: pd.DataFrame, processed_df: pd.DataFrame,
                             showlegend=False
                         )
                         
+                        # Update x and y axis labels
                         for i, weather_col in enumerate(weather_cols, 1):
-                            fig.update_xaxes(title_text=weather_col, row=i, col=1)
-                            fig.update_yaxes(title_text='BC (ng/m³)', row=i, col=1)
-                        
+                           fig.update_xaxes(
+                                title_text=f'{weather_col} (Units)',
+                                row=i, col=1
+                            )
+                           fig.update_yaxes(
+                                title_text='Black Carbon (ng/m³)',
+                                row=i, col=1
+                            )
                         print("[DEBUG] Saving weather correlation plot")
                         weather_correlation_path = os.path.join(static_folder, f'weather_correlation_{timestamp}.html')
                         fig.write_html(weather_correlation_path)
