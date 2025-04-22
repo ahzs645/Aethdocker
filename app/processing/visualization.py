@@ -3,6 +3,28 @@ import plotly
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import re
+
+def create_time_series_plot(df, x_col, y_cols, title, y_label):
+    """Create a time series plot with multiple lines"""
+    fig = go.Figure()
+    
+    for col in y_cols:
+        fig.add_trace(go.Scatter(
+            x=df[x_col],
+            y=df[col],
+            name=col,
+            mode='lines'
+        ))
+    
+    fig.update_layout(
+        title=title,
+        xaxis_title='Time',
+        yaxis_title=y_label,
+        template='plotly_white'
+    )
+    
+    return fig
 import pandas as pd
 import numpy as np
 from scipy import stats
@@ -361,16 +383,43 @@ def create_visualizations(original_df: pd.DataFrame, processed_df: pd.DataFrame,
         
         try:
             print("[DEBUG] Creating BC time series plot")
-            bc_fig = create_time_series_plot(
-                viz_df,
-                'timestamp',
-                ['rawBC', 'processedBC'],
-                f'{wavelength} BC Time Series',
-                'BC (ng/m³)'
-            )
-            bc_time_series_path = os.path.join(static_folder, f'bc_time_series_{timestamp}.html')
-            bc_fig.write_html(bc_time_series_path)
-            result['bc_time_series'] = f'/static/bc_time_series_{timestamp}.html'
+            print(f"[DEBUG] Available columns: {viz_df.columns.tolist()}")
+            
+            # Validate BC columns exist
+            if not {'rawBC', 'processedBC'}.issubset(viz_df.columns):
+                raise ValueError("Missing required BC columns. Available columns: " + ", ".join(viz_df.columns))
+            
+            # Check for valid data
+            print(f"[DEBUG] BC data stats:")
+            print(f"rawBC: {viz_df['rawBC'].describe()}")
+            print(f"processedBC: {viz_df['processedBC'].describe()}")
+            
+            if viz_df['rawBC'].isnull().all() or viz_df['processedBC'].isnull().all():
+                raise ValueError("BC columns contain no valid data")
+            
+            # Create time series plot with error handling
+            try:
+                valid_bc_data = viz_df[['timestamp', 'rawBC', 'processedBC']].dropna()
+                if valid_bc_data.empty:
+                    raise ValueError("No valid BC data after removing null values")
+                    
+                print(f"[DEBUG] Valid BC data points: {len(valid_bc_data)}")
+                bc_fig = create_time_series_plot(
+                    valid_bc_data,
+                    'timestamp',
+                    ['rawBC', 'processedBC'],
+                    f'{wavelength} BC Time Series',
+                    'BC (ng/m³)'
+                )
+                bc_time_series_path = os.path.join(static_folder, f'bc_time_series_{timestamp}.html')
+                bc_fig.write_html(bc_time_series_path)
+                result['bc_time_series'] = f'/static/bc_time_series_{timestamp}.html'
+                print("[DEBUG] Successfully created BC time series plot")
+            except Exception as e:
+                print(f"[DEBUG] Error in BC plot creation: {str(e)}")
+                print("[DEBUG] BC data head:")
+                print(viz_df[['timestamp', 'rawBC', 'processedBC']].head())
+                raise
         except Exception as e:
             print(f"[DEBUG] Error creating BC time series: {str(e)}")
         
@@ -380,16 +429,64 @@ def create_visualizations(original_df: pd.DataFrame, processed_df: pd.DataFrame,
             processing_progress[job_id] = 90
         
         try:
-            atn_fig = create_time_series_plot(
-                viz_df,
-                'timestamp',
-                ['atn'],
-                f'{wavelength} ATN Time Series',
-                'ATN'
-            )
-            atn_time_series_path = os.path.join(static_folder, f'atn_time_series_{timestamp}.html')
-            atn_fig.write_html(atn_time_series_path)
-            result['atn_time_series'] = f'/static/atn_time_series_{timestamp}.html'
+            print("[DEBUG] Creating ATN time series plot")
+            print(f"[DEBUG] Available columns for ATN: {viz_df.columns.tolist()}")
+            
+            # Find ATN column that matches the wavelength (e.g., "blueAtn1")
+            print(f"[DEBUG] Looking for ATN column with wavelength: {wavelength}")
+            print(f"[DEBUG] All columns before pattern match: {viz_df.columns.tolist()}")
+            
+            # Try transformed column name first (camelCase format)
+            atn_col = f"{wavelength.lower()}Atn1"
+            print(f"[DEBUG] Trying exact column name: {atn_col}")
+            
+            if atn_col not in viz_df.columns:
+                # Try pattern matching as fallback
+                print("[DEBUG] Exact column not found, trying pattern matching")
+                atn_pattern = re.compile(f"{wavelength.lower()}.*atn.*1", re.IGNORECASE)
+                atn_col = next((col for col in viz_df.columns if atn_pattern.search(col)), None)
+            
+            if not atn_col:
+                print("[DEBUG] No ATN column found matching pattern for wavelength:", wavelength)
+                raise ValueError(f"No ATN column found for wavelength {wavelength}. Available columns: " + ", ".join(viz_df.columns))
+            
+            print(f"[DEBUG] Found ATN column: {atn_col}")
+            print(f"[DEBUG] ATN data stats: {viz_df[atn_col].describe()}")
+            
+            if viz_df[atn_col].isnull().all():
+                raise ValueError(f"ATN column '{atn_col}' contains no valid data")
+            
+            # Validate ATN data before plotting
+            if atn_col:
+                print(f"[DEBUG] Found ATN column: {atn_col}")
+                print(f"[DEBUG] ATN data stats: {viz_df[atn_col].describe()}")
+                
+                # Create valid data subset for plotting
+                valid_atn_data = viz_df[['timestamp', atn_col]].dropna()
+                if valid_atn_data.empty:
+                    raise ValueError(f"No valid ATN data after removing null values")
+                
+                print(f"[DEBUG] Valid ATN data points: {len(valid_atn_data)}")
+                
+                try:
+                    atn_fig = create_time_series_plot(
+                        valid_atn_data,
+                        'timestamp',
+                        [atn_col],
+                        f'{wavelength} ATN Time Series',
+                        'ATN'
+                    )
+                    atn_time_series_path = os.path.join(static_folder, f'atn_time_series_{timestamp}.html')
+                    atn_fig.write_html(atn_time_series_path)
+                    result['atn_time_series'] = f'/static/atn_time_series_{timestamp}.html'
+                    print("[DEBUG] Successfully created ATN time series plot")
+                except Exception as e:
+                    print(f"[DEBUG] Error creating ATN time series plot: {str(e)}")
+                    print(f"[DEBUG] ATN data head: {valid_atn_data.head()}")
+                    raise
+            else:
+                print("[DEBUG] No ATN column found matching the pattern")
+                raise ValueError(f"No ATN column found for wavelength {wavelength}")
         except Exception as e:
             print(f"[DEBUG] Error creating ATN time series: {str(e)}")
         
