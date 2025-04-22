@@ -12,7 +12,7 @@ from typing import Optional, Dict, Any
 
 from app.processing.aethalometer import process_aethalometer_data_in_chunks, apply_ona_algorithm
 from app.processing.weather import process_weather_data, synchronize_data
-from app.processing.visualization import prepare_visualization_data
+from app.processing.visualization import create_visualizations  # Changed from prepare_visualization_data
 from app.utils.status_tracker import processing_status, processing_progress, processing_messages
 from app.utils.json_encoder import NpEncoder, safe_json_dumps, clean_dict_for_json, ensure_json_serializable
 
@@ -76,12 +76,15 @@ def process_data():
         # Create necessary directories
         upload_folder = 'app/data'
         results_folder = 'app/data/results'
-        os.makedirs(upload_folder, exist_ok=True)
-        os.makedirs(results_folder, exist_ok=True)
+        static_folder = 'app/static'
+        
+        for folder in [upload_folder, results_folder, static_folder]:
+            os.makedirs(folder, exist_ok=True)
         
         # Clean up old files
         cleanup_old_files(upload_folder)
         cleanup_old_files(results_folder)
+        cleanup_old_files(static_folder)
         
         # Save uploaded files
         aethalometer_path = os.path.join(upload_folder, secure_filename(aethalometer_file.filename))
@@ -126,7 +129,7 @@ def process_data_async(job_id: str, aethalometer_path: str, weather_path: Option
             raise ValueError("Invalid aethalometer data format")
         
         # Apply ONA algorithm
-        _, processed_df = apply_ona_algorithm(aethalometer_df, wavelength, atn_min, job_id=job_id)
+        original_df, processed_df = apply_ona_algorithm(aethalometer_df, wavelength, atn_min, job_id=job_id)
         if processed_df.empty:
             raise ValueError(f"Could not find {wavelength} ATN and BC columns")
 
@@ -147,13 +150,7 @@ def process_data_async(job_id: str, aethalometer_path: str, weather_path: Option
                     try:
                         combined_df = synchronize_data(processed_df, weather_df, job_id=job_id)
                     except ValueError as e:
-                        if "Date range mismatch" in str(e):
-                            error_msg = (
-                                "Weather data time period does not match aethalometer data. "
-                                "Please ensure the weather data covers the same time period as your aethalometer data."
-                            )
-                        else:
-                            error_msg = f"Warning: Weather data synchronization failed: {str(e)}"
+                        error_msg = f"Warning: Weather data synchronization failed: {str(e)}"
                         print(f"[DEBUG] {error_msg}")
                         print(traceback.format_exc())
                         processing_messages[job_id] = error_msg
@@ -171,27 +168,22 @@ def process_data_async(job_id: str, aethalometer_path: str, weather_path: Option
         # Save processed data efficiently
         processed_df.to_csv(processed_path, index=False)
         
-        # Prepare visualization data
-        # Store original data before processing
-        original_df = aethalometer_df.copy()
-        
-        visualization_data = prepare_visualization_data(
-            original_df, processed_df, combined_df, wavelength, job_id=job_id
-        )
-        
-        if not visualization_data or all(v is None for v in visualization_data.values()):
-            raise ValueError("Failed to generate visualization data")
-        
-        # Prepare results data
+        # Create visualizations
+        print("[DEBUG] Creating visualizations...")
         try:
-            # Determine sample size based on data size
+            visualizations = create_visualizations(
+                original_df, processed_df, combined_df, wavelength, timestamp, job_id=job_id
+            )
+            
+            if not visualizations or all(v is None for v in visualizations.values()):
+                raise ValueError("Failed to generate visualizations")
+                
+            # Prepare results data
             total_rows = len(processed_df)
             sample_size = min(1000, total_rows)
             
             # Prepare data samples efficiently
-            # Ensure processed data has required columns
-            processed_sample = processed_df.head(sample_size)
-            processed_sample = processed_sample[['timestamp', 'rawBC', 'processedBC']].copy()
+            processed_sample = processed_df[['timestamp', 'rawBC', 'processedBC']].head(sample_size)
             
             result_data = {
                 'processed_data': clean_dict_for_json(
@@ -200,7 +192,7 @@ def process_data_async(job_id: str, aethalometer_path: str, weather_path: Option
                 'combined_data': [],
                 'wavelength': wavelength,
                 'atn_min': atn_min,
-                'visualization_data': clean_dict_for_json(visualization_data),
+                'visualizations': clean_dict_for_json(visualizations),
                 'download_path': f'processed_{wavelength}_{timestamp}.csv',
                 'total_rows': total_rows,
                 'sample_size': sample_size
@@ -218,20 +210,12 @@ def process_data_async(job_id: str, aethalometer_path: str, weather_path: Option
             processing_status[job_id + "_results"] = ensure_json_serializable(result_data)
             
         except Exception as e:
-            print(f"Error preparing results: {e}")
+            error_msg = f"Error creating visualizations: {str(e)}"
+            print(error_msg)
             print(traceback.format_exc())
-            
-            error_msg = f"Error preparing results: {str(e)}"
             processing_status[job_id] = "Error"
             processing_messages[job_id] = error_msg
             processing_progress[job_id] = 0
-            processing_status[job_id + "_results"] = ensure_json_serializable({
-                'wavelength': wavelength,
-                'atn_min': atn_min,
-                'visualization_data': None,
-                'download_path': f'processed_{wavelength}_{timestamp}.csv',
-                'error': error_msg
-            })
         
         # Cleanup temporary files
         try:
@@ -254,28 +238,59 @@ def get_status(job_id: str):
     """Get processing status with improved error handling"""
     try:
         if job_id not in processing_status:
-            return jsonify({'error': 'Job not found'}), 404
+            return jsonify({
+                'status': 'Error',
+                'error': 'Invalid or expired job ID'
+            }), 404
         
-        status = processing_status.get(job_id, "Unknown")
+        status = processing_status[job_id]
+        message = processing_messages.get(job_id, '')
         progress = processing_progress.get(job_id, 0)
-        message = processing_messages.get(job_id, "")
         
         response = {
             'status': status,
-            'progress': progress,
-            'message': message
+            'message': message,
+            'progress': progress
         }
         
-        if status == "Completed" and job_id + "_results" in processing_status:
-            response['results'] = processing_status[job_id + "_results"]
-        elif status == "Error":
-            response['error'] = message
-        
+        # Add results if processing is complete
+        if status == "Completed":
+            results = processing_status.get(job_id + "_results")
+            if not results:
+                return jsonify({
+                    'status': 'Error',
+                    'message': 'Results not found',
+                    'error': 'Processing completed but no results available'
+                }), 500
+                
+            # Validate visualization data
+            if 'visualizations' not in results:
+                return jsonify({
+                    'status': 'Error',
+                    'message': 'Visualization data missing',
+                    'error': 'Required visualization data not found in results'
+                }), 500
+                
+            # Verify at least one visualization exists
+            if not any(results['visualizations'].values()):
+                return jsonify({
+                    'status': 'Error',
+                    'message': 'No valid visualizations generated',
+                    'error': 'All visualization attempts failed'
+                }), 500
+                
+            response['results'] = results
+            
         return jsonify(response)
         
     except Exception as e:
         print(f"Error in get_status: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
+        print(traceback.format_exc())
+        return jsonify({
+            'status': 'Error',
+            'message': str(e),
+            'error': 'Internal server error'
+        }), 500
 
 @api_bp.route('/download/<filename>', methods=['GET'])
 def download_file(filename: str):

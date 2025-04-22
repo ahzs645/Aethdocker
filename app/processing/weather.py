@@ -354,97 +354,57 @@ def synchronize_data(aethalometer_df, weather_df, job_id=None):
         if job_id:
             processing_messages[job_id] = "Synchronizing aethalometer and weather data..."
             processing_progress[job_id] = 60
-            
-        # Filter weather data to match aethalometer date range
-        try:
-            weather_df = filter_weather_data_by_range(weather_df, aethalometer_df)
-        except ValueError as e:
-            raise ValueError(f"Date range mismatch: {str(e)}")
         
         print("[DEBUG] Starting data synchronization")
-        print(f"[DEBUG] Aethalometer data shape: {aethalometer_df.shape}")
-        print(f"[DEBUG] Weather data shape: {weather_df.shape}")
-        print(f"[DEBUG] Aethalometer columns: {aethalometer_df.columns.tolist()}")
-        print(f"[DEBUG] Weather columns: {weather_df.columns.tolist()}")
-        print(f"[DEBUG] Aethalometer data types:\n{aethalometer_df.dtypes}")
-        print(f"[DEBUG] Weather data types:\n{weather_df.dtypes}")
-        
-        # Ensure timestamp columns exist
-        if 'timestamp' not in aethalometer_df.columns or 'timestamp' not in weather_df.columns:
-            raise ValueError("Missing timestamp column in one or both datasets")
         
         # Convert timestamps to datetime if they're not already
-        try:
-            print("[DEBUG] Converting timestamps to datetime")
-            print(f"[DEBUG] Aethalometer timestamp sample: {aethalometer_df['timestamp'].head()}")
-            print(f"[DEBUG] Weather timestamp sample: {weather_df['timestamp'].head()}")
+        aethalometer_df['timestamp'] = pd.to_datetime(aethalometer_df['timestamp'])
+        weather_df['timestamp'] = pd.to_datetime(weather_df['timestamp'])
+        
+        # Ensure both timestamps are timezone aware (UTC)
+        if aethalometer_df['timestamp'].dt.tz is None:
+            aethalometer_df['timestamp'] = aethalometer_df['timestamp'].dt.tz_localize('UTC')
+        else:
+            aethalometer_df['timestamp'] = aethalometer_df['timestamp'].dt.tz_convert('UTC')
             
-            aethalometer_df['timestamp'] = pd.to_datetime(aethalometer_df['timestamp'])
-            weather_df['timestamp'] = pd.to_datetime(weather_df['timestamp'])
+        if weather_df['timestamp'].dt.tz is None:
+            weather_df['timestamp'] = weather_df['timestamp'].dt.tz_localize('UTC')
+        else:
+            weather_df['timestamp'] = weather_df['timestamp'].dt.tz_convert('UTC')
             
-            # Ensure timestamps are timezone aware
-            print("[DEBUG] Making timestamps timezone aware")
-            aethalometer_df['timestamp'] = ensure_tz_aware(aethalometer_df['timestamp'])
-            weather_df['timestamp'] = ensure_tz_aware(weather_df['timestamp'])
-            
-            print("[DEBUG] Timestamps converted and timezone-aware")
-            print(f"[DEBUG] Aethalometer timestamp sample after conversion: {aethalometer_df['timestamp'].head()}")
-            print(f"[DEBUG] Weather timestamp sample after conversion: {weather_df['timestamp'].head()}")
-        except Exception as e:
-            print(f"[DEBUG] Error during timestamp conversion: {str(e)}")
-            print(f"[DEBUG] Aethalometer timestamp type: {type(aethalometer_df['timestamp'])}")
-            print(f"[DEBUG] Weather timestamp type: {type(weather_df['timestamp'])}")
-            print(f"[DEBUG] Full traceback: {traceback.format_exc()}")
-            raise
+        print("[DEBUG] Aethalometer data range:", 
+              aethalometer_df['timestamp'].min().strftime('%Y-%m-%d %H:%M:%S'),
+              "to",
+              aethalometer_df['timestamp'].max().strftime('%Y-%m-%d %H:%M:%S'))
+        print("[DEBUG] Weather data range before filtering:",
+              weather_df['timestamp'].min().strftime('%Y-%m-%d %H:%M:%S'),
+              "to", 
+              weather_df['timestamp'].max().strftime('%Y-%m-%d %H:%M:%S'))
         
         # Handle multiple windSpeed columns if they exist
         wind_speed_cols = [col for col in weather_df.columns if col.startswith('windSpeed')]
         if len(wind_speed_cols) > 1:
-            print(f"[DEBUG] Found multiple wind speed columns: {wind_speed_cols}")
-            # Use the first non-null value from any windSpeed column
             weather_df['windSpeed'] = weather_df[wind_speed_cols].bfill(axis=1).iloc[:, 0]
-            # Drop the numbered columns
             weather_df = weather_df.drop(columns=[col for col in wind_speed_cols if col != 'windSpeed'])
-            print(f"[DEBUG] Combined wind speed columns into single column")
-            print(f"[DEBUG] Updated weather columns: {weather_df.columns.tolist()}")
-        
-        # Convert both to UTC if they have different timezones
-        if (aethalometer_df['timestamp'].dt.tz and
-            weather_df['timestamp'].dt.tz and
-            aethalometer_df['timestamp'].dt.tz != weather_df['timestamp'].dt.tz):
-            print("[DEBUG] Converting timestamps to UTC")
-            aethalometer_df['timestamp'] = aethalometer_df['timestamp'].dt.tz_convert('UTC')
-            weather_df['timestamp'] = weather_df['timestamp'].dt.tz_convert('UTC')
         
         # Set timestamp as index for both dataframes
         aethalometer_df = aethalometer_df.set_index('timestamp')
         weather_df = weather_df.set_index('timestamp')
         
-        print("[DEBUG] Calculating resampling frequency")
         # Calculate resampling frequency
         time_diffs = pd.Series(aethalometer_df.index[1:] - aethalometer_df.index[:-1])
+        resample_freq = '1min'  # Default
         if len(time_diffs) > 0:
             min_time_diff = time_diffs.min()
             resample_freq = f"{max(1, int(min_time_diff.total_seconds()))}S"
-            print(f"[DEBUG] Using resampling frequency: {resample_freq}")
-        else:
-            resample_freq = '1min'  # Default if can't determine
-            print("[DEBUG] Using default resampling frequency: 1min")
         
-        print("[DEBUG] Resampling and interpolating weather data")
-        # For hourly weather data, use appropriate interpolation
+        # Resample and interpolate weather data
         weather_resampled = weather_df.copy()
-        
-        # Fill missing values using appropriate methods for each type
         for col in weather_resampled.columns:
             if col.startswith(('temperature', 'humidity', 'pressure')):
-                # Use cubic interpolation for continuous variables
                 weather_resampled[col] = weather_resampled[col].interpolate(method='cubic')
             elif col.startswith('wind'):
-                # Use linear interpolation for wind measurements
                 weather_resampled[col] = weather_resampled[col].interpolate(method='linear')
-        
-        print(f"[DEBUG] Weather data shape after resampling: {weather_resampled.shape}")
         
         # Reset index for merge
         aethalometer_reset = aethalometer_df.reset_index()
@@ -454,47 +414,23 @@ def synchronize_data(aethalometer_df, weather_df, job_id=None):
         aethalometer_reset = aethalometer_reset.sort_values('timestamp')
         weather_reset = weather_reset.sort_values('timestamp')
         
-        print("[DEBUG] Merging dataframes")
-        print(f"[DEBUG] Aethalometer columns before merge: {aethalometer_reset.columns.tolist()}")
-        print(f"[DEBUG] Weather columns before merge: {weather_reset.columns.tolist()}")
-        
-        # Identify overlapping columns (except timestamp)
+        # Handle overlapping columns
         overlapping_cols = [col for col in aethalometer_reset.columns if col in weather_reset.columns and col != 'timestamp']
         if overlapping_cols:
-            print(f"[DEBUG] Found overlapping columns: {overlapping_cols}")
-            # Rename overlapping columns in weather_reset
             weather_reset = weather_reset.rename(columns={col: f"weather_{col}" for col in overlapping_cols})
-            print(f"[DEBUG] Weather columns after renaming: {weather_reset.columns.tolist()}")
         
-        # Merge dataframes with improved handling
+        # Merge dataframes
         combined = pd.merge_asof(
             aethalometer_reset,
             weather_reset,
             on='timestamp',
             direction='nearest',
-            tolerance=pd.Timedelta('1h')  # Match within 1 hour for hourly weather data
+            tolerance=pd.Timedelta('1h')
         )
-
-        # Add processedBC column if it exists in original data
-        if 'processedBC' in aethalometer_df.columns:
-            combined['processedBC'] = aethalometer_df['processedBC']
         
-        print(f"[DEBUG] Combined columns after merge: {combined.columns.tolist()}")
-        
-        # Ensure 'processedBC' column is retained
-        print("[DEBUG] Checking for processedBC column")
-        print(f"[DEBUG] Columns in aethalometer_reset: {aethalometer_reset.columns.tolist()}")
-        print(f"[DEBUG] processedBC in combined before: {combined.columns.tolist()}")
-        
-        if 'processedBC' not in combined.columns and 'processedBC' in aethalometer_reset.columns:
-            print("[DEBUG] Restoring processedBC column")
+        # Handle processedBC column if it exists
+        if 'processedBC' in aethalometer_df.columns and 'processedBC' not in combined.columns:
             combined['processedBC'] = aethalometer_reset['processedBC']
-            print(f"[DEBUG] processedBC stats after restoration: {combined['processedBC'].describe()}")
-        
-        print(f"[DEBUG] Combined data shape: {combined.shape}")
-        print(f"[DEBUG] Combined columns: {combined.columns.tolist()}")
-        print("[DEBUG] Sample of combined data:")
-        print(combined.head())
         
         if job_id:
             processing_progress[job_id] = 100

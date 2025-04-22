@@ -1,8 +1,11 @@
 import os
+import plotly
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import pandas as pd
 import numpy as np
 from scipy import stats
-from scipy.stats import gaussian_kde
 import traceback
 from typing import Optional, Dict, Any, List
 from app.utils.status_tracker import processing_status, processing_progress, processing_messages
@@ -314,3 +317,217 @@ def prepare_visualization_data(original_df: pd.DataFrame, processed_df: pd.DataF
             'comparison_data': None,
             'weather_correlation_data': None
         }
+
+def create_visualizations(original_df: pd.DataFrame, processed_df: pd.DataFrame,
+                        combined_df: Optional[pd.DataFrame], wavelength: str,
+                        timestamp: str, job_id: Optional[str] = None) -> Dict[str, str]:
+    """Create visualizations with improved memory efficiency and error handling"""
+    try:
+        print(f"[DEBUG] Starting create_visualizations")
+        print(f"[DEBUG] Original DataFrame shape: {original_df.shape}")
+        print(f"[DEBUG] Processed DataFrame shape: {processed_df.shape}")
+        print(f"[DEBUG] Combined DataFrame shape: {combined_df.shape if combined_df is not None else 'None'}")
+        print(f"[DEBUG] Processed DataFrame columns: {processed_df.columns.tolist()}")
+        
+        if 'processedBC' not in processed_df.columns:
+            raise ValueError("Required column 'processedBC' not found in processed data")
+            
+        if 'rawBC' not in processed_df.columns:
+            raise ValueError("Required column 'rawBC' not found in processed data")
+            
+        print(f"[DEBUG] processedBC stats in processed_df: {processed_df['processedBC'].describe()}")
+        
+        # Create static directory
+        static_folder = 'app/static'
+        os.makedirs(static_folder, exist_ok=True)
+        
+        # Downsample data for visualization
+        viz_df = downsample_data(processed_df)
+        if viz_df.empty:
+            raise ValueError("No valid data after downsampling")
+        
+        # Initialize result dictionary with empty paths
+        result = {
+            'bc_time_series': None,
+            'atn_time_series': None,
+            'bc_comparison': None,
+            'weather_correlation': None
+        }
+        
+        # BC Time Series
+        if job_id:
+            processing_messages[job_id] = "Generating BC time series plot..."
+            processing_progress[job_id] = 85
+        
+        try:
+            print("[DEBUG] Creating BC time series plot")
+            bc_fig = create_time_series_plot(
+                viz_df,
+                'timestamp',
+                ['rawBC', 'processedBC'],
+                f'{wavelength} BC Time Series',
+                'BC (ng/m³)'
+            )
+            bc_time_series_path = os.path.join(static_folder, f'bc_time_series_{timestamp}.html')
+            bc_fig.write_html(bc_time_series_path)
+            result['bc_time_series'] = f'/static/bc_time_series_{timestamp}.html'
+        except Exception as e:
+            print(f"[DEBUG] Error creating BC time series: {str(e)}")
+        
+        # ATN Time Series
+        if job_id:
+            processing_messages[job_id] = "Generating ATN time series plot..."
+            processing_progress[job_id] = 90
+        
+        try:
+            atn_fig = create_time_series_plot(
+                viz_df,
+                'timestamp',
+                ['atn'],
+                f'{wavelength} ATN Time Series',
+                'ATN'
+            )
+            atn_time_series_path = os.path.join(static_folder, f'atn_time_series_{timestamp}.html')
+            atn_fig.write_html(atn_time_series_path)
+            result['atn_time_series'] = f'/static/atn_time_series_{timestamp}.html'
+        except Exception as e:
+            print(f"[DEBUG] Error creating ATN time series: {str(e)}")
+        
+        # BC Comparison
+        if job_id:
+            processing_messages[job_id] = "Generating BC comparison plot..."
+            processing_progress[job_id] = 95
+            
+        try:
+            valid_bc_data = viz_df[['rawBC', 'processedBC']].dropna()
+            if len(valid_bc_data) > 0:
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=valid_bc_data['rawBC'],
+                    y=valid_bc_data['processedBC'],
+                    mode='markers',
+                    name='BC Comparison',
+                    marker=dict(
+                        color=valid_bc_data['processedBC'],
+                        colorscale='Viridis',
+                        showscale=True
+                    )
+                ))
+                
+                min_val = min(valid_bc_data['rawBC'].min(), valid_bc_data['processedBC'].min())
+                max_val = max(valid_bc_data['rawBC'].max(), valid_bc_data['processedBC'].max())
+                fig.add_trace(go.Scatter(
+                    x=[min_val, max_val],
+                    y=[min_val, max_val],
+                    mode='lines',
+                    name='1:1 Line',
+                    line=dict(dash='dash')
+                ))
+                
+                corr_stats = calculate_correlations(valid_bc_data, 'rawBC', 'processedBC')
+                if corr_stats:
+                    fig.add_annotation(
+                        text=f"Pearson r: {corr_stats['pearson_r']:.3f}<br>Spearman ρ: {corr_stats['spearman_r']:.3f}",
+                        xref="paper", yref="paper",
+                        x=0.05, y=0.95,
+                        showarrow=False,
+                        bgcolor='rgba(255,255,255,0.8)'
+                    )
+                
+                fig.update_layout(
+                    title=f'{wavelength} BC: Raw vs Processed',
+                    xaxis_title='Raw BC (ng/m³)',
+                    yaxis_title='Processed BC (ng/m³)',
+                    template='plotly_white'
+                )
+                
+                bc_comparison_path = os.path.join(static_folder, f'bc_comparison_{timestamp}.html')
+                fig.write_html(bc_comparison_path)
+                result['bc_comparison'] = f'/static/bc_comparison_{timestamp}.html'
+        except Exception as e:
+            print(f"[DEBUG] Error creating BC comparison plot: {str(e)}")
+        
+        # Weather correlation plots
+        if combined_df is not None and not combined_df.empty:
+            try:
+                if 'processedBC' not in combined_df.columns and 'processedBC' in processed_df.columns:
+                    combined_df = combined_df.copy()
+                    combined_df['processedBC'] = processed_df['processedBC']
+                
+                combined_viz_df = downsample_data(combined_df)
+                weather_cols = identify_weather_columns(combined_viz_df)
+                
+                if weather_cols and 'processedBC' in combined_viz_df.columns:
+                    fig = make_subplots(
+                        rows=len(weather_cols),
+                        cols=1,
+                        subplot_titles=[f'{wavelength} BC vs {col}' for col in weather_cols],
+                        vertical_spacing=0.2
+                    )
+                    
+                    for i, weather_col in enumerate(weather_cols, 1):
+                        corr_stats = calculate_correlations(combined_viz_df, 'processedBC', weather_col)
+                        
+                        fig.add_trace(
+                            go.Scatter(
+                                x=combined_viz_df[weather_col],
+                                y=combined_viz_df['processedBC'],
+                                mode='markers',
+                                marker=dict(
+                                    size=8,
+                                    color=combined_viz_df['processedBC'],
+                                    colorscale='Plasma',
+                                    showscale=True if i == len(weather_cols) else False,
+                                    colorbar=dict(title='BC (ng/m³)') if i == 1 else None
+                                ),
+                                name=weather_col
+                            ),
+                            row=i, col=1
+                        )
+                        
+                        if corr_stats:
+                            fig.add_annotation(
+                                text=(f"Pearson r: {corr_stats['pearson_r']:.3f}<br>"
+                                     f"Spearman ρ: {corr_stats['spearman_r']:.3f}"),
+                                xref=f"x{i}", yref=f"y{i}",
+                                x=0.95, y=0.95,
+                                showarrow=False,
+                                bgcolor='rgba(255,255,255,0.8)',
+                                xanchor='right'
+                            )
+                    
+                    fig.update_layout(
+                        height=300 * len(weather_cols),
+                        width=800,
+                        template='plotly_white',
+                        showlegend=False
+                    )
+                    
+                    for i, weather_col in enumerate(weather_cols, 1):
+                        fig.update_xaxes(title_text=f'{weather_col}', row=i, col=1)
+                        fig.update_yaxes(title_text='Black Carbon (ng/m³)', row=i, col=1)
+                    
+                    weather_correlation_path = os.path.join(static_folder, f'weather_correlation_{timestamp}.html')
+                    fig.write_html(weather_correlation_path)
+                    result['weather_correlation'] = f'/static/weather_correlation_{timestamp}.html'
+            except Exception as e:
+                print(f"[DEBUG] Error creating weather correlation plot: {str(e)}")
+        
+        # Verify that at least one visualization was created
+        if not any(result.values()):
+            raise ValueError("No visualizations could be created from the data")
+            
+        if job_id:
+            processing_messages[job_id] = "Visualizations created successfully"
+            processing_progress[job_id] = 100
+            
+        print(f"[DEBUG] Visualization creation complete. Results: {result}")
+        return result
+        
+    except Exception as e:
+        error_msg = f"Error creating visualizations: {str(e)}"
+        print(error_msg)
+        print(traceback.format_exc())
+        if job_id:
+            processing_messages[job_id] = error_msg
+        raise
