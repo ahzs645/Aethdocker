@@ -2,8 +2,29 @@ import os
 import plotly
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime
 from plotly.subplots import make_subplots
+import re
+
+def create_time_series_plot(df, x_col, y_cols, title, y_label):
+    """Create a time series plot with multiple lines"""
+    fig = go.Figure()
+    
+    for col in y_cols:
+        fig.add_trace(go.Scatter(
+            x=df[x_col],
+            y=df[col],
+            name=col,
+            mode='lines'
+        ))
+    
+    fig.update_layout(
+        title=title,
+        xaxis_title='Time',
+        yaxis_title=y_label,
+        template='plotly_white'
+    )
+    
+    return fig
 import pandas as pd
 import numpy as np
 from scipy import stats
@@ -13,16 +34,11 @@ from app.utils.status_tracker import processing_status, processing_progress, pro
 
 def downsample_data(df: pd.DataFrame, max_points: int = 10000) -> pd.DataFrame:
     """Downsample data intelligently to preserve important features"""
-    print(f"[DEBUG] Downsampling data. Input shape: {df.shape}")
-    print(f"[DEBUG] Input columns: {df.columns.tolist()}")
-    print(f"[DEBUG] processedBC stats before downsampling: {df['processedBC'].describe() if 'processedBC' in df.columns else 'Not found'}")
-    
     if len(df) <= max_points:
         return df
     
     # Calculate optimal window size for downsampling
     window_size = len(df) // max_points
-    print(f"[DEBUG] Calculated window size: {window_size}")
     
     # Use rolling window to capture local extremes
     df_downsampled = pd.DataFrame()
@@ -33,7 +49,6 @@ def downsample_data(df: pd.DataFrame, max_points: int = 10000) -> pd.DataFrame:
     
     # Process numeric columns
     numeric_cols = df.select_dtypes(include=[np.number]).columns
-    print(f"[DEBUG] Processing numeric columns: {numeric_cols.tolist()}")
     
     for col in numeric_cols:
         # Calculate mean, min, and max for each window
@@ -46,39 +61,8 @@ def downsample_data(df: pd.DataFrame, max_points: int = 10000) -> pd.DataFrame:
         # Add significant extremes
         significant_diff = (maxs - mins) > means.std()
         df_downsampled.loc[significant_diff, col] = maxs[significant_diff]
-        
-        if col == 'processedBC':
-            print(f"[DEBUG] processedBC stats after downsampling: {df_downsampled['processedBC'].describe()}")
     
-    print(f"[DEBUG] Output shape: {df_downsampled.shape}")
-    print(f"[DEBUG] Output columns: {df_downsampled.columns.tolist()}")
     return df_downsampled
-
-def create_time_series_plot(df: pd.DataFrame, x: str, y: List[str], title: str, 
-                          y_label: str) -> go.Figure:
-    """Create a time series plot with multiple traces"""
-    fig = go.Figure()
-    
-    for y_col in y:
-        # Handle missing or invalid data
-        valid_data = df[[x, y_col]].dropna()
-        if len(valid_data) > 0:
-            fig.add_trace(go.Scatter(
-                x=valid_data[x],
-                y=valid_data[y_col],
-                mode='lines',
-                name=y_col
-            ))
-    
-    fig.update_layout(
-        title=title,
-        xaxis_title='Time',
-        yaxis_title=y_label,
-        template='plotly_white',
-        showlegend=True
-    )
-    
-    return fig
 
 def calculate_correlations(data: pd.DataFrame, x: str, y: str) -> Dict[str, float]:
     """Calculate correlations with proper error handling"""
@@ -109,8 +93,6 @@ def identify_weather_columns(df: pd.DataFrame) -> List[str]:
     }
     
     weather_cols = []
-    print("[DEBUG] Looking for weather columns in DataFrame")
-    print(f"[DEBUG] Available columns: {df.columns.tolist()}")
     
     for col in df.columns:
         col_lower = col.lower()
@@ -118,13 +100,245 @@ def identify_weather_columns(df: pd.DataFrame) -> List[str]:
             if any(pattern.lower() in col_lower for pattern in patterns):
                 if pd.api.types.is_numeric_dtype(df[col]):
                     weather_cols.append(col)
-                    print(f"[DEBUG] Found weather column: {col} matching category {category}")
-                else:
-                    print(f"[DEBUG] Column {col} matches pattern but is not numeric. Type: {df[col].dtype}")
                 break
     
-    print(f"[DEBUG] Identified weather columns: {weather_cols}")
     return weather_cols
+
+def prepare_visualization_data(original_df: pd.DataFrame, processed_df: pd.DataFrame,
+                           combined_df: Optional[pd.DataFrame], wavelength: str,
+                           job_id: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Prepare data for visualization with improved memory efficiency and error handling.
+    
+    Args:
+        original_df: Original dataframe (not used, kept for backward compatibility)
+        processed_df: Processed dataframe containing timestamp, rawBC, and processedBC columns
+        combined_df: Optional combined dataframe with weather data
+        wavelength: The wavelength being processed
+        job_id: Optional job ID for status tracking
+    
+    Returns:
+        Dictionary containing visualization data for time series, comparison, and weather correlation
+    """
+    """Prepare data for visualization with improved memory efficiency and error handling"""
+    try:
+        if job_id:
+            processing_status[job_id] = "Preparing visualization data"
+            processing_messages[job_id] = "Processing data for visualization..."
+            processing_progress[job_id] = 85
+
+        # Validate input data
+        if processed_df is None or processed_df.empty:
+            raise ValueError("Processed data is empty or None")
+            
+        if not isinstance(processed_df, pd.DataFrame):
+            raise TypeError("Processed data must be a pandas DataFrame")
+            
+        # Ensure timestamp column exists and is datetime
+        if 'timestamp' not in processed_df.columns:
+            raise ValueError("Timestamp column missing from processed data")
+            
+        processed_df['timestamp'] = pd.to_datetime(processed_df['timestamp'])
+        
+        # Downsample data for visualization
+        viz_df = downsample_data(processed_df, max_points=10000)
+        
+        # Initialize result dictionary with metadata
+        result = {
+            'time_series_data': None,
+            'comparison_data': None,
+            'weather_correlation_data': None,
+            'metadata': {
+                'original_rows': len(processed_df),
+                'downsampled_rows': len(viz_df),
+                'timestamp_range': {
+                    'start': processed_df['timestamp'].min().isoformat(),
+                    'end': processed_df['timestamp'].max().isoformat()
+                }
+            }
+        }
+        
+        try:
+            # Validate required columns and data types
+            required_columns = {'timestamp', 'rawBC', 'processedBC'}
+            if not all(col in viz_df.columns for col in required_columns):
+                missing_cols = required_columns - set(viz_df.columns)
+                raise ValueError(f"Missing required columns: {', '.join(missing_cols)}")
+
+            # Ensure data is not empty
+            if viz_df.empty:
+                raise ValueError("Visualization DataFrame is empty")
+
+            # Check for null values in critical columns
+            null_counts = viz_df[list(required_columns)].isnull().sum()
+            if null_counts.any():
+                print(f"[WARNING] Null values found in columns: {null_counts[null_counts > 0].to_dict()}")
+
+            # Time Series Data
+            if job_id:
+                processing_messages[job_id] = "Preparing time series data..."
+            
+            time_series_data = viz_df[['timestamp', 'rawBC', 'processedBC']].dropna()
+            if time_series_data.empty:
+                raise ValueError("No valid time series data available after removing null values")
+            
+            result['time_series_data'] = time_series_data.to_dict('records')
+            
+            # BC Comparison Data
+            if job_id:
+                processing_messages[job_id] = "Preparing comparison data..."
+                processing_progress[job_id] = 90
+            
+            try:
+                # Validate BC data columns
+                if not {'rawBC', 'processedBC'}.issubset(viz_df.columns):
+                    raise ValueError("Missing required BC columns for comparison")
+                
+                # Check data ranges
+                if (viz_df['rawBC'] < 0).any() or (viz_df['processedBC'] < 0).any():
+                    print("[WARNING] Negative BC values found in data")
+                
+                valid_bc_data = viz_df[['rawBC', 'processedBC']].dropna()
+                if valid_bc_data.empty:
+                    raise ValueError("No valid BC data available for comparison after removing null values")
+                
+                if len(valid_bc_data) < 5:
+                    raise ValueError("Insufficient data points for meaningful comparison (minimum 5 required)")
+                
+                result['comparison_data'] = valid_bc_data.to_dict('records')
+                
+                # Add correlation statistics
+                corr_stats = calculate_correlations(valid_bc_data, 'rawBC', 'processedBC')
+                if corr_stats:
+                    result['comparison_stats'] = corr_stats
+                    # Add data quality metrics
+                    result['comparison_stats']['data_points'] = len(valid_bc_data)
+                    result['comparison_stats']['null_percentage'] = (
+                        (1 - len(valid_bc_data) / len(viz_df)) * 100
+                    )
+                else:
+                    print("[WARNING] Could not calculate correlation statistics")
+            except Exception as e:
+                print(f"[ERROR] BC comparison processing failed: {str(e)}")
+                if job_id:
+                    processing_messages[job_id] = f"Warning: BC comparison processing failed: {str(e)}"
+            
+            # Weather correlation data
+            if combined_df is not None and not combined_df.empty:
+                if job_id:
+                    processing_messages[job_id] = "Preparing weather correlation data..."
+                    processing_progress[job_id] = 95
+
+                try:
+                    # Validate timestamp column in combined data
+                    if 'timestamp' not in combined_df.columns:
+                        raise ValueError("Combined data missing timestamp column")
+
+                    # Add processedBC to combined_df if not present
+                    if 'processedBC' not in combined_df.columns:
+                        if 'processedBC' not in processed_df.columns:
+                            raise ValueError("ProcessedBC column not found in either dataset")
+                        combined_df = combined_df.copy()
+                        combined_df['processedBC'] = processed_df['processedBC']
+
+                    # Ensure timestamps are properly aligned
+                    combined_df['timestamp'] = pd.to_datetime(combined_df['timestamp'])
+                    if combined_df['timestamp'].dt.tz is None:
+                        combined_df['timestamp'] = combined_df['timestamp'].dt.tz_localize('UTC')
+
+                    # Get aethalometer data time range
+                    aeth_start = processed_df['timestamp'].min()
+                    aeth_end = processed_df['timestamp'].max()
+                    
+                    print(f"[INFO] Aethalometer data time range: {aeth_start} to {aeth_end}")
+                    print(f"[INFO] Weather data time range before filtering: {combined_df['timestamp'].min()} to {combined_df['timestamp'].max()}")
+                    
+                    # Filter weather data to match aethalometer time range
+                    combined_df = combined_df[
+                        (combined_df['timestamp'] >= aeth_start) &
+                        (combined_df['timestamp'] <= aeth_end)
+                    ].copy()
+                    
+                    if combined_df.empty:
+                        raise ValueError("No overlapping time period between weather and aethalometer data")
+                    
+                    print(f"[INFO] Weather data time range after filtering: {combined_df['timestamp'].min()} to {combined_df['timestamp'].max()}")
+                    print(f"[INFO] Number of weather data points after filtering: {len(combined_df)}")
+                    
+                    # Update metadata with time overlap information
+                    result['metadata']['weather_data'] = {
+                        'original_timespan': {
+                            'start': combined_df['timestamp'].min().isoformat(),
+                            'end': combined_df['timestamp'].max().isoformat()
+                        },
+                        'overlap_timespan': {
+                            'start': aeth_start.isoformat(),
+                            'end': aeth_end.isoformat()
+                        },
+                        'points_in_overlap': len(combined_df)
+                    }
+
+                    # Downsample combined data
+                    combined_viz_df = downsample_data(combined_df)
+                    
+                    # Identify weather columns
+                    weather_cols = identify_weather_columns(combined_viz_df)
+                    if not weather_cols:
+                        raise ValueError("No valid weather columns identified")
+
+                    if 'processedBC' not in combined_viz_df.columns:
+                        raise ValueError("ProcessedBC column missing from combined visualization data")
+
+                    weather_data = {}
+                    valid_correlations = False
+
+                    for weather_col in weather_cols:
+                        valid_data = combined_viz_df[[weather_col, 'processedBC']].dropna()
+                        if len(valid_data) > 0:
+                            correlation = calculate_correlations(valid_data, weather_col, 'processedBC')
+                            if correlation is not None:
+                                weather_data[weather_col] = {
+                                    'data': valid_data.to_dict('records'),
+                                    'correlation': correlation
+                                }
+                                valid_correlations = True
+
+                    if valid_correlations:
+                        result['weather_correlation_data'] = weather_data
+                    else:
+                        print("[WARNING] No valid weather correlations found")
+                        if job_id:
+                            processing_messages[job_id] = "Warning: No valid weather correlations found"
+
+                except Exception as e:
+                    print(f"[ERROR] Weather correlation processing failed: {str(e)}")
+                    if job_id:
+                        processing_messages[job_id] = f"Warning: Weather correlation processing failed: {str(e)}"
+        
+        except Exception as e:
+            print(f"Error in visualization data preparation: {e}")
+            print(traceback.format_exc())
+            if job_id:
+                processing_messages[job_id] = f"Warning: Some visualization data could not be prepared: {str(e)}"
+        
+        if job_id:
+            processing_messages[job_id] = "Visualization data prepared successfully"
+            processing_progress[job_id] = 100
+        
+        return result
+        
+    except Exception as e:
+        error_msg = f"Error preparing visualization data: {str(e)}"
+        if job_id:
+            processing_status[job_id] = "Error"
+            processing_messages[job_id] = error_msg
+        print(error_msg)
+        print(traceback.format_exc())
+        return {
+            'time_series_data': None,
+            'comparison_data': None,
+            'weather_correlation_data': None
+        }
 
 def create_visualizations(original_df: pd.DataFrame, processed_df: pd.DataFrame,
                         combined_df: Optional[pd.DataFrame], wavelength: str,
@@ -136,81 +350,153 @@ def create_visualizations(original_df: pd.DataFrame, processed_df: pd.DataFrame,
         print(f"[DEBUG] Processed DataFrame shape: {processed_df.shape}")
         print(f"[DEBUG] Combined DataFrame shape: {combined_df.shape if combined_df is not None else 'None'}")
         print(f"[DEBUG] Processed DataFrame columns: {processed_df.columns.tolist()}")
-        print(f"[DEBUG] processedBC stats in processed_df: {processed_df['processedBC'].describe() if 'processedBC' in processed_df.columns else 'Not found'}")
         
-        if job_id:
-            processing_status[job_id] = "Creating visualizations"
-            processing_messages[job_id] = "Preparing data for visualization..."
-            processing_progress[job_id] = 85
+        if 'processedBC' not in processed_df.columns:
+            raise ValueError("Required column 'processedBC' not found in processed data")
+            
+        if 'rawBC' not in processed_df.columns:
+            raise ValueError("Required column 'rawBC' not found in processed data")
+            
+        print(f"[DEBUG] processedBC stats in processed_df: {processed_df['processedBC'].describe()}")
         
         # Create static directory
         static_folder = 'app/static'
         os.makedirs(static_folder, exist_ok=True)
         
         # Downsample data for visualization
-        viz_df = downsample_data(processed_df, max_points=10000)
+        viz_df = downsample_data(processed_df)
+        if viz_df.empty:
+            raise ValueError("No valid data after downsampling")
         
-        # Initialize result dictionary
+        # Initialize result dictionary with empty paths
         result = {
             'bc_time_series': None,
             'atn_time_series': None,
             'bc_comparison': None,
-            'weather_correlation': None,
-            'time_aligned': None
+            'weather_correlation': None
         }
         
+        # BC Time Series
+        if job_id:
+            processing_messages[job_id] = "Generating BC time series plot..."
+            processing_progress[job_id] = 85
+        
         try:
-            # BC Time Series
-            if job_id:
-                processing_messages[job_id] = "Generating BC time series plot..."
+            print("[DEBUG] Creating BC time series plot")
+            print(f"[DEBUG] Available columns: {viz_df.columns.tolist()}")
             
-            print(f"[DEBUG] Creating BC time series plot")
-            print(f"[DEBUG] viz_df shape before time series: {viz_df.shape}")
-            print(f"[DEBUG] viz_df columns: {viz_df.columns.tolist()}")
-            print(f"[DEBUG] processedBC null values: {viz_df['processedBC'].isnull().sum() if 'processedBC' in viz_df.columns else 'Column not found'}")
-            print(f"[DEBUG] processedBC stats in viz_df: {viz_df['processedBC'].describe() if 'processedBC' in viz_df.columns else 'Not found'}")
+            # Validate BC columns exist
+            if not {'rawBC', 'processedBC'}.issubset(viz_df.columns):
+                raise ValueError("Missing required BC columns. Available columns: " + ", ".join(viz_df.columns))
             
-            bc_fig = create_time_series_plot(
-                viz_df,
-                'timestamp',
-                ['rawBC', 'processedBC'],
-                f'{wavelength} BC Time Series',
-                'BC (ng/m³)'
-            )
-            bc_time_series_path = os.path.join(static_folder, f'bc_time_series_{timestamp}.html')
-            bc_fig.write_html(bc_time_series_path)
-            result['bc_time_series'] = f'/static/bc_time_series_{timestamp}.html'
+            # Check for valid data
+            print(f"[DEBUG] BC data stats:")
+            print(f"rawBC: {viz_df['rawBC'].describe()}")
+            print(f"processedBC: {viz_df['processedBC'].describe()}")
             
-            # ATN Time Series
-            if job_id:
-                processing_messages[job_id] = "Generating ATN time series plot..."
-                processing_progress[job_id] = 90
+            if viz_df['rawBC'].isnull().all() or viz_df['processedBC'].isnull().all():
+                raise ValueError("BC columns contain no valid data")
             
-            atn_fig = create_time_series_plot(
-                viz_df,
-                'timestamp',
-                ['atn'],
-                f'{wavelength} ATN Time Series',
-                'ATN'
-            )
-            atn_time_series_path = os.path.join(static_folder, f'atn_time_series_{timestamp}.html')
-            atn_fig.write_html(atn_time_series_path)
-            result['atn_time_series'] = f'/static/atn_time_series_{timestamp}.html'
+            # Create time series plot with error handling
+            try:
+                valid_bc_data = viz_df[['timestamp', 'rawBC', 'processedBC']].dropna()
+                if valid_bc_data.empty:
+                    raise ValueError("No valid BC data after removing null values")
+                    
+                print(f"[DEBUG] Valid BC data points: {len(valid_bc_data)}")
+                bc_fig = create_time_series_plot(
+                    valid_bc_data,
+                    'timestamp',
+                    ['rawBC', 'processedBC'],
+                    f'{wavelength} BC Time Series',
+                    'BC (ng/m³)'
+                )
+                bc_time_series_path = os.path.join(static_folder, f'bc_time_series_{timestamp}.html')
+                bc_fig.write_html(bc_time_series_path)
+                result['bc_time_series'] = f'/static/bc_time_series_{timestamp}.html'
+                print("[DEBUG] Successfully created BC time series plot")
+            except Exception as e:
+                print(f"[DEBUG] Error in BC plot creation: {str(e)}")
+                print("[DEBUG] BC data head:")
+                print(viz_df[['timestamp', 'rawBC', 'processedBC']].head())
+                raise
+        except Exception as e:
+            print(f"[DEBUG] Error creating BC time series: {str(e)}")
+        
+        # ATN Time Series
+        if job_id:
+            processing_messages[job_id] = "Generating ATN time series plot..."
+            processing_progress[job_id] = 90
+        
+        try:
+            print("[DEBUG] Creating ATN time series plot")
+            print(f"[DEBUG] Available columns for ATN: {viz_df.columns.tolist()}")
             
-            # BC Comparison
-            if job_id:
-                processing_messages[job_id] = "Generating BC comparison plot..."
-                processing_progress[job_id] = 95
+            # Find ATN column that matches the wavelength (e.g., "blueAtn1")
+            print(f"[DEBUG] Looking for ATN column with wavelength: {wavelength}")
+            print(f"[DEBUG] All columns before pattern match: {viz_df.columns.tolist()}")
             
-            print(f"[DEBUG] Creating BC comparison plot")
-            print(f"[DEBUG] viz_df shape before comparison: {viz_df.shape}")
-            print(f"[DEBUG] Required columns present: rawBC={('rawBC' in viz_df.columns)}, processedBC={('processedBC' in viz_df.columns)}")
+            # Try transformed column name first (camelCase format)
+            atn_col = f"{wavelength.lower()}Atn1"
+            print(f"[DEBUG] Trying exact column name: {atn_col}")
             
+            if atn_col not in viz_df.columns:
+                # Try pattern matching as fallback
+                print("[DEBUG] Exact column not found, trying pattern matching")
+                atn_pattern = re.compile(f"{wavelength.lower()}.*atn.*1", re.IGNORECASE)
+                atn_col = next((col for col in viz_df.columns if atn_pattern.search(col)), None)
+            
+            if not atn_col:
+                print("[DEBUG] No ATN column found matching pattern for wavelength:", wavelength)
+                raise ValueError(f"No ATN column found for wavelength {wavelength}. Available columns: " + ", ".join(viz_df.columns))
+            
+            print(f"[DEBUG] Found ATN column: {atn_col}")
+            print(f"[DEBUG] ATN data stats: {viz_df[atn_col].describe()}")
+            
+            if viz_df[atn_col].isnull().all():
+                raise ValueError(f"ATN column '{atn_col}' contains no valid data")
+            
+            # Validate ATN data before plotting
+            if atn_col:
+                print(f"[DEBUG] Found ATN column: {atn_col}")
+                print(f"[DEBUG] ATN data stats: {viz_df[atn_col].describe()}")
+                
+                # Create valid data subset for plotting
+                valid_atn_data = viz_df[['timestamp', atn_col]].dropna()
+                if valid_atn_data.empty:
+                    raise ValueError(f"No valid ATN data after removing null values")
+                
+                print(f"[DEBUG] Valid ATN data points: {len(valid_atn_data)}")
+                
+                try:
+                    atn_fig = create_time_series_plot(
+                        valid_atn_data,
+                        'timestamp',
+                        [atn_col],
+                        f'{wavelength} ATN Time Series',
+                        'ATN'
+                    )
+                    atn_time_series_path = os.path.join(static_folder, f'atn_time_series_{timestamp}.html')
+                    atn_fig.write_html(atn_time_series_path)
+                    result['atn_time_series'] = f'/static/atn_time_series_{timestamp}.html'
+                    print("[DEBUG] Successfully created ATN time series plot")
+                except Exception as e:
+                    print(f"[DEBUG] Error creating ATN time series plot: {str(e)}")
+                    print(f"[DEBUG] ATN data head: {valid_atn_data.head()}")
+                    raise
+            else:
+                print("[DEBUG] No ATN column found matching the pattern")
+                raise ValueError(f"No ATN column found for wavelength {wavelength}")
+        except Exception as e:
+            print(f"[DEBUG] Error creating ATN time series: {str(e)}")
+        
+        # BC Comparison
+        if job_id:
+            processing_messages[job_id] = "Generating BC comparison plot..."
+            processing_progress[job_id] = 95
+            
+        try:
             valid_bc_data = viz_df[['rawBC', 'processedBC']].dropna()
-            print(f"[DEBUG] Valid BC data shape after dropna: {valid_bc_data.shape}")
-            print(f"[DEBUG] Rows dropped due to NaN: {len(viz_df) - len(valid_bc_data)}")
-            print(f"[DEBUG] processedBC stats in valid_bc_data: {valid_bc_data['processedBC'].describe() if len(valid_bc_data) > 0 else 'Empty DataFrame'}")
-            
             if len(valid_bc_data) > 0:
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(
@@ -225,7 +511,6 @@ def create_visualizations(original_df: pd.DataFrame, processed_df: pd.DataFrame,
                     )
                 ))
                 
-                # Add 1:1 line
                 min_val = min(valid_bc_data['rawBC'].min(), valid_bc_data['processedBC'].min())
                 max_val = max(valid_bc_data['rawBC'].max(), valid_bc_data['processedBC'].max())
                 fig.add_trace(go.Scatter(
@@ -236,7 +521,6 @@ def create_visualizations(original_df: pd.DataFrame, processed_df: pd.DataFrame,
                     line=dict(dash='dash')
                 ))
                 
-                # Add correlation statistics
                 corr_stats = calculate_correlations(valid_bc_data, 'rawBC', 'processedBC')
                 if corr_stats:
                     fig.add_annotation(
@@ -257,137 +541,90 @@ def create_visualizations(original_df: pd.DataFrame, processed_df: pd.DataFrame,
                 bc_comparison_path = os.path.join(static_folder, f'bc_comparison_{timestamp}.html')
                 fig.write_html(bc_comparison_path)
                 result['bc_comparison'] = f'/static/bc_comparison_{timestamp}.html'
-            
-            # Weather correlation plots
-            if combined_df is not None and not combined_df.empty:
-                print("[DEBUG] Starting weather correlation visualization")
-                print(f"[DEBUG] Combined DataFrame shape: {combined_df.shape}")
-                print(f"[DEBUG] Combined DataFrame columns: {combined_df.columns.tolist()}")
-                
-                if job_id:
-                    processing_messages[job_id] = "Generating weather correlation plots..."
-                    processing_progress[job_id] = 98
-                
-                # Add processedBC to combined_df if not present
+        except Exception as e:
+            print(f"[DEBUG] Error creating BC comparison plot: {str(e)}")
+        
+        # Weather correlation plots
+        if combined_df is not None and not combined_df.empty:
+            try:
                 if 'processedBC' not in combined_df.columns and 'processedBC' in processed_df.columns:
-                    print("[DEBUG] Adding processedBC to combined data")
                     combined_df = combined_df.copy()
                     combined_df['processedBC'] = processed_df['processedBC']
                 
-                # Downsample combined data
                 combined_viz_df = downsample_data(combined_df)
-                
-                # Identify weather columns with improved detection
                 weather_cols = identify_weather_columns(combined_viz_df)
-
-                print(
-                    f"[DEBUG] Identified weather columns: {weather_cols}, "
-                    f"Combined viz columns: {combined_viz_df.columns.tolist()}, "
-                    f"ProcessedBC present: {'processedBC' in combined_viz_df.columns}"
-                )
-
+                
                 if weather_cols and 'processedBC' in combined_viz_df.columns:
-                    print("[DEBUG] Creating weather correlation subplots")
-                    print(f"[DEBUG] ProcessedBC stats: {combined_viz_df['processedBC'].describe()}")
-                    try:
-                        # Create correlation plots with improved layout
-                        fig = make_subplots(
-                            rows=len(weather_cols),
-                            cols=1,
-                            subplot_titles=[f'{wavelength} BC vs {col}' for col in weather_cols],
-                            vertical_spacing=0.2
-                        )
+                    fig = make_subplots(
+                        rows=len(weather_cols),
+                        cols=1,
+                        subplot_titles=[f'{wavelength} BC vs {col}' for col in weather_cols],
+                        vertical_spacing=0.2
+                    )
+                    
+                    for i, weather_col in enumerate(weather_cols, 1):
+                        corr_stats = calculate_correlations(combined_viz_df, 'processedBC', weather_col)
                         
-                        for i, weather_col in enumerate(weather_cols, 1):
-                            print(f"[DEBUG] Creating subplot for {weather_col}")
-                            
-                            # Calculate correlations
-                            corr_stats = calculate_correlations(combined_viz_df, 'processedBC', weather_col)
-                            print(f"[DEBUG] Correlation stats for {weather_col}: {corr_stats}")
-                            
-                            # Add scatter plot
-                            fig.add_trace(
-                                go.Scatter(
-                                    x=combined_viz_df[weather_col],
-                                    y=combined_viz_df['processedBC'],
-                                    mode='markers',
-                                    marker=dict(
-                                        size=8,
-                                        color=combined_viz_df['processedBC'], # Color by BC values
-                                        colorscale='Plasma', # Change color scale to 'Plasma'
-                                        showscale=True if i == len(weather_cols) else False, # Show scale only for the last plot
-                                        colorbar=dict(title='BC (ng/m³)') if i == 1 else None
-                                    ),
-                                    name=weather_col
+                        fig.add_trace(
+                            go.Scatter(
+                                x=combined_viz_df[weather_col],
+                                y=combined_viz_df['processedBC'],
+                                mode='markers',
+                                marker=dict(
+                                    size=8,
+                                    color=combined_viz_df['processedBC'],
+                                    colorscale='Plasma',
+                                    showscale=True if i == len(weather_cols) else False,
+                                    colorbar=dict(title='BC (ng/m³)') if i == 1 else None
                                 ),
-                                row=i, col=1
-                            )
-                            
-                            if corr_stats:
-                                fig.add_annotation(
-                                    text=(f"Pearson r: {corr_stats['pearson_r']:.3f}<br>"
-                                          f"Spearman ρ: {corr_stats['spearman_r']:.3f}"),
-                                    xref=f"x{i}", yref=f"y{i}",
-                                    x=0.95, y=0.95,
-                                    showarrow=False,
-                                    bgcolor='rgba(255,255,255,0.8)',
-                                    xanchor='right'
-                                )
-                        
-                        print("[DEBUG] Updating layout for weather correlation plot")
-                        fig.update_layout(
-                            height=300 * len(weather_cols),
-                            width=800,
-                            template='plotly_white',
-                            showlegend=False
+                                name=weather_col
+                            ),
+                            row=i, col=1
                         )
                         
-                        # Update x and y axis labels
-                        for i, weather_col in enumerate(weather_cols, 1):
-                           fig.update_xaxes(
-                                title_text=f'{weather_col} (Units)',
-                                row=i, col=1
+                        if corr_stats:
+                            fig.add_annotation(
+                                text=(f"Pearson r: {corr_stats['pearson_r']:.3f}<br>"
+                                     f"Spearman ρ: {corr_stats['spearman_r']:.3f}"),
+                                xref=f"x{i}", yref=f"y{i}",
+                                x=0.95, y=0.95,
+                                showarrow=False,
+                                bgcolor='rgba(255,255,255,0.8)',
+                                xanchor='right'
                             )
-                           fig.update_yaxes(
-                                title_text='Black Carbon (ng/m³)',
-                                row=i, col=1
-                            )
-                        print("[DEBUG] Saving weather correlation plot")
-                        weather_correlation_path = os.path.join(static_folder, f'weather_correlation_{timestamp}.html')
-                        fig.write_html(weather_correlation_path)
-                        result['weather_correlation'] = f'/static/weather_correlation_{timestamp}.html'
-                        print("[DEBUG] Weather correlation plot saved successfully")
-                    except Exception as e:
-                        print(f"[DEBUG] Error creating weather correlation plot: {str(e)}")
-                        print(traceback.format_exc())
-                else:
-                    print("[DEBUG] No weather columns identified for correlation plots")
-            else:
-                print("[DEBUG] No combined data available for weather correlation")
+                    
+                    fig.update_layout(
+                        height=300 * len(weather_cols),
+                        width=800,
+                        template='plotly_white',
+                        showlegend=False
+                    )
+                    
+                    for i, weather_col in enumerate(weather_cols, 1):
+                        fig.update_xaxes(title_text=f'{weather_col}', row=i, col=1)
+                        fig.update_yaxes(title_text='Black Carbon (ng/m³)', row=i, col=1)
+                    
+                    weather_correlation_path = os.path.join(static_folder, f'weather_correlation_{timestamp}.html')
+                    fig.write_html(weather_correlation_path)
+                    result['weather_correlation'] = f'/static/weather_correlation_{timestamp}.html'
+            except Exception as e:
+                print(f"[DEBUG] Error creating weather correlation plot: {str(e)}")
         
-        except Exception as e:
-            print(f"Error in visualization creation: {e}")
-            print(traceback.format_exc())
-            if job_id:
-                processing_messages[job_id] = f"Warning: Some visualizations could not be created: {str(e)}"
-        
+        # Verify that at least one visualization was created
+        if not any(result.values()):
+            raise ValueError("No visualizations could be created from the data")
+            
         if job_id:
             processing_messages[job_id] = "Visualizations created successfully"
             processing_progress[job_id] = 100
-        
+            
+        print(f"[DEBUG] Visualization creation complete. Results: {result}")
         return result
         
     except Exception as e:
         error_msg = f"Error creating visualizations: {str(e)}"
-        if job_id:
-            processing_status[job_id] = "Error"
-            processing_messages[job_id] = error_msg
         print(error_msg)
         print(traceback.format_exc())
-        return {
-            'bc_time_series': None,
-            'atn_time_series': None,
-            'bc_comparison': None,
-            'weather_correlation': None,
-            'time_aligned': None
-        }
+        if job_id:
+            processing_messages[job_id] = error_msg
+        raise

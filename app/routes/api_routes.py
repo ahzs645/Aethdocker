@@ -12,7 +12,7 @@ from typing import Optional, Dict, Any
 
 from app.processing.aethalometer import process_aethalometer_data_in_chunks, apply_ona_algorithm
 from app.processing.weather import process_weather_data, synchronize_data
-from app.processing.visualization import create_visualizations
+from app.processing.visualization import create_visualizations  # Changed from prepare_visualization_data
 from app.utils.status_tracker import processing_status, processing_progress, processing_messages
 from app.utils.json_encoder import NpEncoder, safe_json_dumps, clean_dict_for_json, ensure_json_serializable
 
@@ -77,6 +77,7 @@ def process_data():
         upload_folder = 'app/data'
         results_folder = 'app/data/results'
         static_folder = 'app/static'
+        
         for folder in [upload_folder, results_folder, static_folder]:
             os.makedirs(folder, exist_ok=True)
         
@@ -127,33 +128,32 @@ def process_data_async(job_id: str, aethalometer_path: str, weather_path: Option
         if aethalometer_df.empty:
             raise ValueError("Invalid aethalometer data format")
         
-        print(f"[DEBUG] Aethalometer data processed: {len(aethalometer_df)} rows")
-        
         # Apply ONA algorithm
         original_df, processed_df = apply_ona_algorithm(aethalometer_df, wavelength, atn_min, job_id=job_id)
         if processed_df.empty:
             raise ValueError(f"Could not find {wavelength} ATN and BC columns")
-        
-        print(f"[DEBUG] ONA algorithm applied: {len(processed_df)} rows")
+
+        # Ensure required columns exist
+        required_columns = {'timestamp', 'rawBC', 'processedBC'}
+        if not all(col in processed_df.columns for col in required_columns):
+            missing_cols = required_columns - set(processed_df.columns)
+            raise ValueError(f"Missing required columns in processed data: {', '.join(missing_cols)}")
         
         # Process weather data if provided
         weather_df = None
         combined_df = None
         if weather_path:
             try:
-                print("[DEBUG] Processing weather data...")
                 weather_df = process_weather_data(weather_path, job_id=job_id)
-                print(f"[DEBUG] Weather data processed: {len(weather_df) if weather_df is not None else 'None'} rows")
                 
                 if weather_df is not None and not weather_df.empty:
-                    print("[DEBUG] Synchronizing weather data...")
-                    combined_df = synchronize_data(original_df, weather_df, job_id=job_id)
-                    print(f"[DEBUG] Data synchronized: {len(combined_df) if combined_df is not None else 'None'} rows")
-                    
-                    # Print column names to verify weather data
-                    if combined_df is not None:
-                        print(f"[DEBUG] Combined data columns: {combined_df.columns.tolist()}")
-                        print(f"[DEBUG] Weather columns found: {[col for col in combined_df.columns if any(x in col.lower() for x in ['temp', 'humid', 'wind', 'pressure'])]}")
+                    try:
+                        combined_df = synchronize_data(processed_df, weather_df, job_id=job_id)
+                    except ValueError as e:
+                        error_msg = f"Warning: Weather data synchronization failed: {str(e)}"
+                        print(f"[DEBUG] {error_msg}")
+                        print(traceback.format_exc())
+                        processing_messages[job_id] = error_msg
             except Exception as e:
                 error_msg = f"Warning: Weather data processing failed: {str(e)}"
                 print(f"[DEBUG] {error_msg}")
@@ -170,27 +170,24 @@ def process_data_async(job_id: str, aethalometer_path: str, weather_path: Option
         
         # Create visualizations
         print("[DEBUG] Creating visualizations...")
-        visualizations = create_visualizations(original_df, processed_df, combined_df, wavelength, timestamp, job_id=job_id)
-        print(f"[DEBUG] Visualization paths: {visualizations}")
-        
-        # Prepare results data
         try:
-            # Determine sample size based on data size
+            visualizations = create_visualizations(
+                original_df, processed_df, combined_df, wavelength, timestamp, job_id=job_id
+            )
+            
+            if not visualizations or all(v is None for v in visualizations.values()):
+                raise ValueError("Failed to generate visualizations")
+                
+            # Prepare results data
             total_rows = len(processed_df)
-            if total_rows > 10000:
-                sample_size = 1000
-            elif total_rows > 1000:
-                sample_size = total_rows // 10
-            else:
-                sample_size = total_rows
+            sample_size = min(1000, total_rows)
             
             # Prepare data samples efficiently
+            processed_sample = processed_df[['timestamp', 'rawBC', 'processedBC']].head(sample_size)
+            
             result_data = {
-                'aethalometer_data': clean_dict_for_json(
-                    original_df.head(sample_size).replace({np.nan: None}).to_dict(orient='records')
-                ),
                 'processed_data': clean_dict_for_json(
-                    processed_df.head(sample_size).replace({np.nan: None}).to_dict(orient='records')
+                    processed_sample.replace({np.nan: None}).to_dict(orient='records')
                 ),
                 'combined_data': [],
                 'wavelength': wavelength,
@@ -205,7 +202,6 @@ def process_data_async(job_id: str, aethalometer_path: str, weather_path: Option
                 result_data['combined_data'] = clean_dict_for_json(
                     combined_df.head(sample_size).replace({np.nan: None}).to_dict(orient='records')
                 )
-                print(f"[DEBUG] Combined data included in results: {len(result_data['combined_data'])} rows")
             
             # Store results
             processing_status[job_id] = "Completed"
@@ -214,17 +210,12 @@ def process_data_async(job_id: str, aethalometer_path: str, weather_path: Option
             processing_status[job_id + "_results"] = ensure_json_serializable(result_data)
             
         except Exception as e:
-            print(f"Error preparing results: {e}")
+            error_msg = f"Error creating visualizations: {str(e)}"
+            print(error_msg)
             print(traceback.format_exc())
-            
-            # Store minimal results
-            processing_status[job_id + "_results"] = ensure_json_serializable({
-                'wavelength': wavelength,
-                'atn_min': atn_min,
-                'visualizations': visualizations,
-                'download_path': f'processed_{wavelength}_{timestamp}.csv',
-                'error': 'Error preparing detailed results'
-            })
+            processing_status[job_id] = "Error"
+            processing_messages[job_id] = error_msg
+            processing_progress[job_id] = 0
         
         # Cleanup temporary files
         try:
@@ -247,29 +238,59 @@ def get_status(job_id: str):
     """Get processing status with improved error handling"""
     try:
         if job_id not in processing_status:
-            return jsonify({'error': 'Job not found'}), 404
+            return jsonify({
+                'status': 'Error',
+                'error': 'Invalid or expired job ID'
+            }), 404
         
-        status = processing_status.get(job_id, "Unknown")
+        status = processing_status[job_id]
+        message = processing_messages.get(job_id, '')
         progress = processing_progress.get(job_id, 0)
-        message = processing_messages.get(job_id, "")
         
         response = {
             'status': status,
-            'progress': progress,
-            'message': message
+            'message': message,
+            'progress': progress
         }
         
-        if status == "Completed" and job_id + "_results" in processing_status:
-            response['results'] = processing_status[job_id + "_results"]
-            print(f"[DEBUG] Returning results with visualizations: {response['results'].get('visualizations', {})}")
-        elif status == "Error":
-            response['error'] = message
-        
+        # Add results if processing is complete
+        if status == "Completed":
+            results = processing_status.get(job_id + "_results")
+            if not results:
+                return jsonify({
+                    'status': 'Error',
+                    'message': 'Results not found',
+                    'error': 'Processing completed but no results available'
+                }), 500
+                
+            # Validate visualization data
+            if 'visualizations' not in results:
+                return jsonify({
+                    'status': 'Error',
+                    'message': 'Visualization data missing',
+                    'error': 'Required visualization data not found in results'
+                }), 500
+                
+            # Verify at least one visualization exists
+            if not any(results['visualizations'].values()):
+                return jsonify({
+                    'status': 'Error',
+                    'message': 'No valid visualizations generated',
+                    'error': 'All visualization attempts failed'
+                }), 500
+                
+            response['results'] = results
+            
         return jsonify(response)
         
     except Exception as e:
         print(f"Error in get_status: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
+        print(traceback.format_exc())
+        return jsonify({
+            'status': 'Error',
+            'message': str(e),
+            'error': 'Internal server error'
+        }), 500
 
 @api_bp.route('/download/<filename>', methods=['GET'])
 def download_file(filename: str):

@@ -26,11 +26,13 @@ def map_field_names(df):
 
 def validate_aethalometer_data(df, wavelength):
     """Validate required columns and data format"""
-    atn_pattern = re.compile(f"{wavelength.lower()}.*atn.*1", re.IGNORECASE)
-    bc_pattern = re.compile(f"{wavelength.lower()}.*bc.*1", re.IGNORECASE)
+    atn_pattern = re.compile(f"{wavelength}\\s*ATN1", re.IGNORECASE)
+    bc_pattern = re.compile(f"{wavelength}\\s*BC1", re.IGNORECASE)
     
-    atn_col = next((col for col in df.columns if atn_pattern.match(col)), None)
-    bc_col = next((col for col in df.columns if bc_pattern.match(col)), None)
+    atn_col = next((col for col in df.columns if atn_pattern.search(col)), None)
+    bc_col = next((col for col in df.columns if bc_pattern.search(col)), None)
+    
+    print(f"[DEBUG] Found columns - ATN: {atn_col}, BC: {bc_col}")
     
     if not (atn_col and bc_col):
         raise ValueError(f"Required columns for {wavelength} wavelength not found")
@@ -179,9 +181,11 @@ def apply_ona_algorithm(df, wavelength="Blue", atn_min=0.01, job_id=None):
         result = pd.DataFrame({
             'timestamp': timestamps,
             'rawBC': bc_values,
-            'processedBC': processed_bc,
-            'atn': atn_values
+            'processedBC': processed_bc
         })
+        # Preserve original ATN column name
+        result[atn_col] = atn_values
+        print(f"[DEBUG] Result DataFrame columns: {result.columns.tolist()}")
         
         # Add window information
         result['windowStart'] = False
