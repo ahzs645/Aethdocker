@@ -15,8 +15,15 @@ import { defineComponent, computed, PropType } from 'vue'
 import Highcharts from 'highcharts'
 
 interface DataPoint {
-  rawBC: number
-  processedBC: number
+  rawBC: number | null
+  processedBC: number | null
+}
+
+interface ComparisonStats {
+  pearson_r: number
+  pearson_p: number
+  spearman_r: number
+  spearman_p: number
 }
 
 export default defineComponent({
@@ -30,36 +37,32 @@ export default defineComponent({
     title: {
       type: String,
       required: true
+    },
+    stats: {
+      type: Object as PropType<ComparisonStats>,
+      default: null
     }
   },
 
   setup(props) {
-    const calculateCorrelation = (data: DataPoint[]) => {
-      const n = data.length
-      let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0, sumY2 = 0
-
-      data.forEach(point => {
-        sumX += point.rawBC
-        sumY += point.processedBC
-        sumXY += point.rawBC * point.processedBC
-        sumX2 += point.rawBC * point.rawBC
-        sumY2 += point.processedBC * point.processedBC
-      })
-
-      const numerator = n * sumXY - sumX * sumY
-      const denominator = Math.sqrt((n * sumX2 - sumX * sumX) * (n * sumY2 - sumY * sumY))
-      
-      return denominator === 0 ? 0 : numerator / denominator
-    }
 
     const chartOptions = computed(() => {
-      const correlation = calculateCorrelation(props.data)
+      const validData = props.data.filter(
+        point => point.rawBC !== null && point.processedBC !== null
+      ) as { rawBC: number; processedBC: number }[]
+
+      if (validData.length === 0) return null
+
       const minValue = Math.min(
-        ...props.data.map(point => Math.min(point.rawBC, point.processedBC))
+        ...validData.map(point => Math.min(point.rawBC, point.processedBC))
       )
       const maxValue = Math.max(
-        ...props.data.map(point => Math.max(point.rawBC, point.processedBC))
+        ...validData.map(point => Math.max(point.rawBC, point.processedBC))
       )
+
+      const correlationText = props.stats
+        ? `Pearson R: ${props.stats.pearson_r.toFixed(3)} (p=${props.stats.pearson_p.toFixed(3)})\nSpearman R: ${props.stats.spearman_r.toFixed(3)} (p=${props.stats.spearman_p.toFixed(3)})`
+        : ''
 
       return {
         chart: {
@@ -98,7 +101,7 @@ export default defineComponent({
         series: [
           {
             name: 'BC Comparison',
-            data: props.data.map(point => [point.rawBC, point.processedBC]),
+            data: validData.map(point => [point.rawBC, point.processedBC]),
             color: '#7cb5ec'
           },
           {
@@ -112,15 +115,15 @@ export default defineComponent({
             }
           }
         ],
-        annotations: [{
+        annotations: correlationText ? [{
           labels: [{
             point: {
               x: minValue + (maxValue - minValue) * 0.1,
               y: maxValue - (maxValue - minValue) * 0.1
             },
-            text: `Correlation: ${correlation.toFixed(3)}`
+            text: correlationText
           }]
-        }],
+        }] : [],
         credits: {
           enabled: false
         }

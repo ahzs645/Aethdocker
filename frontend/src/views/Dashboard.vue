@@ -43,21 +43,22 @@
     </v-row>
 
     <v-row v-if="results">
-      <v-col cols="12">
+      <v-col cols="12" v-if="results.visualization_data?.time_series_data">
         <time-series-chart
-          :data="results.processed_data"
+          :data="results.visualization_data.time_series_data"
           title="BC Time Series"
         />
       </v-col>
-      <v-col cols="12">
+      <v-col cols="12" v-if="results.visualization_data?.comparison_data">
         <comparison-chart
-          :data="results.processed_data"
+          :data="results.visualization_data.comparison_data"
+          :stats="results.visualization_data.comparison_stats"
           title="BC Comparison"
         />
       </v-col>
-      <v-col cols="12" v-if="results.combined_data?.length">
+      <v-col cols="12" v-if="results.visualization_data?.weather_correlation_data">
         <weather-correlation
-          :data="results.combined_data"
+          :data="results.visualization_data.weather_correlation_data"
           title="Weather Correlation"
         />
       </v-col>

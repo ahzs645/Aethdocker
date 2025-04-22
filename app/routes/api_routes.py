@@ -126,9 +126,15 @@ def process_data_async(job_id: str, aethalometer_path: str, weather_path: Option
             raise ValueError("Invalid aethalometer data format")
         
         # Apply ONA algorithm
-        original_df, processed_df = apply_ona_algorithm(aethalometer_df, wavelength, atn_min, job_id=job_id)
+        _, processed_df = apply_ona_algorithm(aethalometer_df, wavelength, atn_min, job_id=job_id)
         if processed_df.empty:
             raise ValueError(f"Could not find {wavelength} ATN and BC columns")
+
+        # Ensure required columns exist
+        required_columns = {'timestamp', 'rawBC', 'processedBC'}
+        if not all(col in processed_df.columns for col in required_columns):
+            missing_cols = required_columns - set(processed_df.columns)
+            raise ValueError(f"Missing required columns in processed data: {', '.join(missing_cols)}")
         
         # Process weather data if provided
         weather_df = None
@@ -138,7 +144,19 @@ def process_data_async(job_id: str, aethalometer_path: str, weather_path: Option
                 weather_df = process_weather_data(weather_path, job_id=job_id)
                 
                 if weather_df is not None and not weather_df.empty:
-                    combined_df = synchronize_data(original_df, weather_df, job_id=job_id)
+                    try:
+                        combined_df = synchronize_data(processed_df, weather_df, job_id=job_id)
+                    except ValueError as e:
+                        if "Date range mismatch" in str(e):
+                            error_msg = (
+                                "Weather data time period does not match aethalometer data. "
+                                "Please ensure the weather data covers the same time period as your aethalometer data."
+                            )
+                        else:
+                            error_msg = f"Warning: Weather data synchronization failed: {str(e)}"
+                        print(f"[DEBUG] {error_msg}")
+                        print(traceback.format_exc())
+                        processing_messages[job_id] = error_msg
             except Exception as e:
                 error_msg = f"Warning: Weather data processing failed: {str(e)}"
                 print(f"[DEBUG] {error_msg}")
@@ -154,9 +172,15 @@ def process_data_async(job_id: str, aethalometer_path: str, weather_path: Option
         processed_df.to_csv(processed_path, index=False)
         
         # Prepare visualization data
+        # Store original data before processing
+        original_df = aethalometer_df.copy()
+        
         visualization_data = prepare_visualization_data(
             original_df, processed_df, combined_df, wavelength, job_id=job_id
         )
+        
+        if not visualization_data or all(v is None for v in visualization_data.values()):
+            raise ValueError("Failed to generate visualization data")
         
         # Prepare results data
         try:
@@ -165,12 +189,13 @@ def process_data_async(job_id: str, aethalometer_path: str, weather_path: Option
             sample_size = min(1000, total_rows)
             
             # Prepare data samples efficiently
+            # Ensure processed data has required columns
+            processed_sample = processed_df.head(sample_size)
+            processed_sample = processed_sample[['timestamp', 'rawBC', 'processedBC']].copy()
+            
             result_data = {
-                'aethalometer_data': clean_dict_for_json(
-                    original_df.head(sample_size).replace({np.nan: None}).to_dict(orient='records')
-                ),
                 'processed_data': clean_dict_for_json(
-                    processed_df.head(sample_size).replace({np.nan: None}).to_dict(orient='records')
+                    processed_sample.replace({np.nan: None}).to_dict(orient='records')
                 ),
                 'combined_data': [],
                 'wavelength': wavelength,
@@ -196,13 +221,16 @@ def process_data_async(job_id: str, aethalometer_path: str, weather_path: Option
             print(f"Error preparing results: {e}")
             print(traceback.format_exc())
             
-            # Store minimal results
+            error_msg = f"Error preparing results: {str(e)}"
+            processing_status[job_id] = "Error"
+            processing_messages[job_id] = error_msg
+            processing_progress[job_id] = 0
             processing_status[job_id + "_results"] = ensure_json_serializable({
                 'wavelength': wavelength,
                 'atn_min': atn_min,
-                'visualization_data': visualization_data,
+                'visualization_data': None,
                 'download_path': f'processed_{wavelength}_{timestamp}.csv',
-                'error': 'Error preparing detailed results'
+                'error': error_msg
             })
         
         # Cleanup temporary files

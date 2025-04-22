@@ -16,8 +16,8 @@ import Highcharts from 'highcharts'
 
 interface DataPoint {
   timestamp: string
-  rawBC: number
-  processedBC: number
+  rawBC: number | null
+  processedBC: number | null
 }
 
 export default defineComponent({

@@ -315,6 +315,32 @@ def process_weather_data(file_path, job_id=None):
         print(error_msg)
         raise RuntimeError(error_msg)
 
+def filter_weather_data_by_range(weather_df, aethalometer_df):
+    """Filter weather data to match aethalometer data date range"""
+    if 'timestamp' not in weather_df.columns or 'timestamp' not in aethalometer_df.columns:
+        raise ValueError("Missing timestamp column in one or both datasets")
+
+    # Get aethalometer date range
+    aeth_min_date = aethalometer_df['timestamp'].min()
+    aeth_max_date = aethalometer_df['timestamp'].max()
+    
+    print(f"[DEBUG] Aethalometer data range: {aeth_min_date} to {aeth_max_date}")
+    print(f"[DEBUG] Weather data range before filtering: {weather_df['timestamp'].min()} to {weather_df['timestamp'].max()}")
+    
+    # Filter weather data to match aethalometer date range
+    filtered_df = weather_df[
+        (weather_df['timestamp'] >= aeth_min_date) &
+        (weather_df['timestamp'] <= aeth_max_date)
+    ]
+    
+    print(f"[DEBUG] Weather data range after filtering: {filtered_df['timestamp'].min() if not filtered_df.empty else 'No data'} to {filtered_df['timestamp'].max() if not filtered_df.empty else 'No data'}")
+    print(f"[DEBUG] Filtered weather data shape: {filtered_df.shape}")
+    
+    if filtered_df.empty:
+        raise ValueError("No weather data available for the aethalometer data time period")
+        
+    return filtered_df
+
 def synchronize_data(aethalometer_df, weather_df, job_id=None):
     """Synchronize aethalometer and weather data by timestamp with improved handling"""
     try:
@@ -328,6 +354,12 @@ def synchronize_data(aethalometer_df, weather_df, job_id=None):
         if job_id:
             processing_messages[job_id] = "Synchronizing aethalometer and weather data..."
             processing_progress[job_id] = 60
+            
+        # Filter weather data to match aethalometer date range
+        try:
+            weather_df = filter_weather_data_by_range(weather_df, aethalometer_df)
+        except ValueError as e:
+            raise ValueError(f"Date range mismatch: {str(e)}")
         
         print("[DEBUG] Starting data synchronization")
         print(f"[DEBUG] Aethalometer data shape: {aethalometer_df.shape}")

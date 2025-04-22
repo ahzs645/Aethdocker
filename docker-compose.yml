@@ -1,10 +1,8 @@
-version: '3'
-
 services:
   aethalometer-processor:
     build: .
     ports:
-      - "5000:5000"
+      - "${PORT:-3000}:5000"
     volumes:
       - ./app/data:/app/app/data
       - ./app/static:/app/app/static
@@ -17,7 +15,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     ports:
-      - "80:80"
+      - "${PORT:-8081}:80"
     depends_on:
       - aethalometer-processor
     restart: unless-stopped

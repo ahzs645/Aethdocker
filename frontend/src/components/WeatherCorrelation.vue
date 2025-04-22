@@ -19,12 +19,18 @@ import { defineComponent, computed, PropType } from 'vue'
 import Highcharts from 'highcharts'
 
 interface WeatherData {
-  processedBC: number
-  temperature_c?: number
-  relative_humidity_percent?: number
-  wind_speed_kmh?: number
-  pressure_hpa?: number
-  [key: string]: number | undefined
+  [key: string]: {
+    data: Array<{
+      [key: string]: number | null
+      processedBC: number | null
+    }>,
+    correlation: {
+      pearson_r: number
+      pearson_p: number
+      spearman_r: number
+      spearman_p: number
+    } | null
+  }
 }
 
 interface WeatherParam {
@@ -38,7 +44,7 @@ export default defineComponent({
 
   props: {
     data: {
-      type: Array as PropType<WeatherData[]>,
+      type: Object as PropType<WeatherData>,
       required: true
     },
     title: {
@@ -50,69 +56,64 @@ export default defineComponent({
   setup(props) {
     const weatherParams = computed(() => {
       const params: WeatherParam[] = []
-      const sample = props.data[0] || {}
+      const paramMap = {
+        'temperature_c': { label: 'Temperature', unit: '°C' },
+        'relative_humidity_percent': { label: 'Relative Humidity', unit: '%' },
+        'wind_speed_kmh': { label: 'Wind Speed', unit: 'km/h' },
+        'pressure_hpa': { label: 'Pressure', unit: 'hPa' }
+      }
 
-      if ('temperature_c' in sample) {
-        params.push({ key: 'temperature_c', label: 'Temperature', unit: '°C' })
-      }
-      if ('relative_humidity_percent' in sample) {
-        params.push({ key: 'relative_humidity_percent', label: 'Relative Humidity', unit: '%' })
-      }
-      if ('wind_speed_kmh' in sample) {
-        params.push({ key: 'wind_speed_kmh', label: 'Wind Speed', unit: 'km/h' })
-      }
-      if ('pressure_hpa' in sample) {
-        params.push({ key: 'pressure_hpa', label: 'Pressure', unit: 'hPa' })
-      }
+      Object.keys(props.data).forEach(key => {
+        if (key in paramMap) {
+          params.push({
+            key,
+            label: paramMap[key as keyof typeof paramMap].label,
+            unit: paramMap[key as keyof typeof paramMap].unit
+          })
+        }
+      })
 
       return params
     })
 
-    const calculateCorrelation = (xValues: number[], yValues: number[]) => {
-      const n = xValues.length
-      let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0, sumY2 = 0
-
-      for (let i = 0; i < n; i++) {
-        sumX += xValues[i]
-        sumY += yValues[i]
-        sumXY += xValues[i] * yValues[i]
-        sumX2 += xValues[i] * xValues[i]
-        sumY2 += yValues[i] * yValues[i]
-      }
-
-      const numerator = n * sumXY - sumX * sumY
-      const denominator = Math.sqrt((n * sumX2 - sumX * sumX) * (n * sumY2 - sumY * sumY))
-      
-      return denominator === 0 ? 0 : numerator / denominator
-    }
-
     const getChartOptions = (param: WeatherParam) => {
-      const validData = props.data.filter(point => 
-        point[param.key] !== undefined && 
-        point.processedBC !== undefined
+      const weatherData = props.data[param.key]
+      if (!weatherData?.data) return null
+
+      const validData = weatherData.data.filter(point =>
+        point[param.key] !== null &&
+        point.processedBC !== null
       )
 
       const xValues = validData.map(point => point[param.key] as number)
-      const yValues = validData.map(point => point.processedBC)
-      const correlation = calculateCorrelation(xValues, yValues)
+      const yValues = validData.map(point => point.processedBC as number)
+      const correlationStats = weatherData.correlation
 
-      // Calculate trend line
-      const xSum = xValues.reduce((a, b) => a + b, 0)
-      const ySum = yValues.reduce((a, b) => a + b, 0)
-      const n = xValues.length
-      const xMean = xSum / n
-      const yMean = ySum / n
-      const ssxx = xValues.reduce((a, b) => a + Math.pow(b - xMean, 2), 0)
-      const ssxy = xValues.reduce((a, b, i) => a + (b - xMean) * (yValues[i] - yMean), 0)
-      const slope = ssxy / ssxx
-      const intercept = yMean - slope * xMean
+      if (validData.length < 2) return null
 
       const minX = Math.min(...xValues)
       const maxX = Math.max(...xValues)
-      const trendLineData = [
-        [minX, slope * minX + intercept],
-        [maxX, slope * maxX + intercept]
-      ]
+      const minY = Math.min(...yValues)
+      const maxY = Math.max(...yValues)
+
+      // Calculate trend line using Pearson correlation if available
+      let trendLineData: [number, number][] = []
+      if (correlationStats?.pearson_r) {
+        const xMean = xValues.reduce((a, b) => a + b, 0) / xValues.length
+        const yMean = yValues.reduce((a, b) => a + b, 0) / yValues.length
+        const slope = correlationStats.pearson_r *
+          (Math.sqrt(yValues.reduce((a, b) => a + Math.pow(b - yMean, 2), 0) / yValues.length) /
+           Math.sqrt(xValues.reduce((a, b) => a + Math.pow(b - xMean, 2), 0) / xValues.length))
+        const intercept = yMean - slope * xMean
+        trendLineData = [
+          [minX, slope * minX + intercept],
+          [maxX, slope * maxX + intercept]
+        ]
+      }
+
+      const correlationText = correlationStats
+        ? `Pearson R: ${correlationStats.pearson_r.toFixed(3)} (p=${correlationStats.pearson_p.toFixed(3)})\nSpearman R: ${correlationStats.spearman_r.toFixed(3)} (p=${correlationStats.spearman_p.toFixed(3)})`
+        : ''
 
       return {
         chart: {
@@ -150,7 +151,7 @@ export default defineComponent({
             data: validData.map(point => [point[param.key], point.processedBC]),
             color: '#7cb5ec'
           },
-          {
+          ...(trendLineData.length ? [{
             name: 'Trend Line',
             type: 'line',
             data: trendLineData,
@@ -159,17 +160,20 @@ export default defineComponent({
             marker: {
               enabled: false
             }
-          }
+          }] : [])
         ],
-        annotations: [{
+        annotations: correlationText ? [{
           labels: [{
             point: {
               x: minX + (maxX - minX) * 0.1,
-              y: Math.max(...yValues) - (Math.max(...yValues) - Math.min(...yValues)) * 0.1
+              y: maxY - (maxY - minY) * 0.1
             },
-            text: `Correlation: ${correlation.toFixed(3)}`
+            text: correlationText,
+            style: {
+              fontSize: '11px'
+            }
           }]
-        }],
+        }] : [],
         credits: {
           enabled: false
         }
